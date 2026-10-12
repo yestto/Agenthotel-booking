@@ -1,0 +1,30 @@
+{
+  "name": "staypilot-hotel-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "agent-ui": "node scripts/agent-server.mjs",
+    "share-gateway": "node scripts/share-gateway.mjs",
+    "build": "node scripts/build.mjs",
+    "computer-agent": "node scripts/agent-cli.mjs",
+    "dev": "node scripts/build.mjs && node scripts/dev.mjs",
+    "test": "node --check scripts/dev.mjs && node --check scripts/computer-agent.mjs && node --check scripts/llm-intake.mjs && node --check scripts/agent-cli.mjs && node --check scripts/agent-orchestrator.mjs && node --check scripts/agent-server.mjs && node tests/computer-agent.mjs && node tests/llm-intake.mjs && node tests/orchestrator.mjs && node tests/agent-console.mjs && node tests/smoke.mjs && node scripts/build.mjs && node tests/worker.mjs && node scripts/validate-artifact.mjs",
+    "test:scenarios": "node tests/browser-agent.mjs && node tests/workflow-agent.mjs && node tests/workflow-scenarios.mjs",
+    "test:workflow": "node tests/workflow-agent.mjs && node tests/workflow-scenarios.mjs",
+    "test:workflow:live": "node tests/workflow-agent-live.mjs",
+    "test:server": "node tests/agent-server.mjs",
+    "test:share": "node tests/share-gateway.mjs",
+    "test:share:live": "node tests/share-live.mjs",
+    "test:browser": "node tests/booking-ui.mjs && node tests/browser-agent-ui.mjs && node tests/agentic-adversarial.mjs",
+    "test:agentic:live": "node tests/browser-agent-ui.mjs --live",
+    "test:all": "npm test && npm run test:scenarios && npm run test:server && npm run test:share && npm run test:browser",
+    "test:intake:live": "node tests/live-intake.mjs",
+    "test:live": "node tests/live-booking.mjs",
+    "validate": "node scripts/validate-artifact.mjs"
+  },
+  "dependencies": {
+    "@langchain/langgraph": "^1.4.21",
+    "playwright-core": "^1.64.0",
+    "zod": "^4.6.5"
+  }
+}
