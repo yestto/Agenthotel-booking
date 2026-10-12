@@ -7,7 +7,7 @@ assert.equal(hostedHealth.status, 200);
 const hostedHealthBody = await hostedHealth.json();
 assert.equal(hostedHealthBody.ready, false);
 assert.equal(hostedHealthBody.mode, "hosted-presentation");
-assert.equal(hostedHealthBody.agents.length, 8);
+assert.equal(hostedHealthBody.agents.length, 9);
 assert.equal(hostedHealthBody.orchestration.framework, "LangGraph.js");
 assert.equal(hostedHealthBody.orchestration.humanInterrupt, "humanApproval");
 

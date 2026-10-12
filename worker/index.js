@@ -310,7 +310,7 @@ export default {
         ready: false,
         mode: "hosted-presentation",
         reason: "The executable browser agents run in the local Node runtime.",
-        agents: ["IntakeAgent", "PolicyAgent", "SupervisorAgent", "SearchAgent", "RankingAgent", "RoomAgent", "CheckoutAgent", "SafetyAgent"],
+        agents: ["IntakeAgent", "PolicyAgent", "DiscoveryAgent", "SupervisorAgent", "SearchAgent", "RankingAgent", "RoomAgent", "CheckoutAgent", "SafetyAgent"],
         orchestration: {
           framework: "LangGraph.js",
           stateSchema: "Zod",

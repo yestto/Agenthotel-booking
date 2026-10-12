@@ -1,6 +1,6 @@
 # StayPilot — multi-agent hotel computer-use platform
 
-StayPilot accepts a natural-language hotel request, uses Gemini for interpretation, workflow supervision, browser action selection and room-rate decisions, and coordinates eight specialist roles through LangGraph.js. The supervisor delegates from current evidence rather than a fixed search-to-checkout sequence. It controls an isolated visible Chrome session. Booking.com is the verified end-to-end adapter; other providers remain experimental, not universally supported. Live hotel, room, price, rating, tax, breakfast, occupancy and cancellation evidence comes from the visible supplier interface—not simulated inventory.
+StayPilot accepts a natural-language hotel request, uses Gemini for interpretation, source-linked web discovery, workflow supervision, browser action selection and room-rate decisions, and coordinates nine specialist roles through LangGraph.js. The supervisor delegates from current evidence rather than a fixed search-to-checkout sequence. It controls an isolated visible Chrome session. Booking.com is the verified end-to-end adapter; other providers remain experimental, not universally supported. Live hotel, room, price, rating, tax, breakfast, occupancy and cancellation evidence comes from the visible supplier interface—not simulated inventory.
 
 The system navigates through search, comparison, room verification, and the provider's protected checkout stage. SafetyAgent then locks the browser read-only before personal data, final booking, or payment.
 
@@ -68,7 +68,19 @@ Booking room availability is checked for the requested quantity. The verified to
 
 ### Senior-engineer audit safeguards
 
-The runtime is a bounded, DOM/tool-based hierarchical agentic workflow, not a universal vision/desktop agent or eight independent LLM processes. Intake, SupervisorAgent, SearchAgent and RoomAgent use distinct model tasks. The model chooses worker delegations, search actions and eligible room rates; deterministic code remains authoritative for eligibility, ranking order, arithmetic and transaction safety.
+The runtime is a bounded, DOM/tool-based hierarchical agentic workflow, not a universal vision/desktop agent or nine independent LLM processes. Intake, DiscoveryAgent, SupervisorAgent, SearchAgent and RoomAgent use distinct model tasks. The model chooses worker delegations, search actions and eligible room rates; deterministic code remains authoritative for eligibility, ranking order, arithmetic and transaction safety.
+
+### Source-linked web discovery
+
+Named hotels and non-default suppliers trigger DiscoveryAgent before the supplier browser opens. It uses the existing Gemini key and model with Google's `googleSearch` grounding tool, then separately assesses the cited hotel/location evidence. It is a direct API integration, not an external MCP server and not visibly typing into Google. Ordinary unnamed Booking.com searches skip the additional requests.
+
+Only hotel name, destination and supplier are sent to discovery—not the original request, trip dates, budget or guest counts. An assessment may cite only facts linked by the provider's grounding metadata to observed HTTPS sources; fabricated IDs and unsafe URLs are rejected. The UI displays those facts, citations and Google's returned search suggestions. Attribution HTML is isolated in an opaque sandbox without scripts or same-origin access.
+
+Discovery never changes the validated hotel, destination, supplier, dates, occupancy or budget, and never navigates the browser to a discovered link. Ambiguous identity evidence requests human clarification before browser launch. Missing citations or a search outage is explicitly reported and allows the unchanged request to continue through live supplier verification; it does not mean the hotel is sold out. Search snippets cannot establish room availability, ratings, prices or checkout permissions. The supervisor receives compact discovery evidence, while supplier UI checks remain authoritative.
+
+There is one grounding request and one assessment at most per run, within a 20-second discovery deadline. The grounding provider may issue multiple underlying queries; Google search charges and the configured model's quota apply. See [Google's grounding documentation](https://ai.google.dev/gemini-api/docs/google-search). No extra package or separate search key is required. A model without grounding support reports the lookup as unavailable; it does not fabricate sources.
+
+Verification status (13 October 2026): controlled discovery, workflow and browser-rendering checks passed. The latest actual Google-grounded lookup returned HTTP 429 `RESOURCE_EXHAUSTED`; live web discovery is not yet successfully verified. The live harness covers exact/typo/wrong-city hotel identity, alternative supplier identity, an invented hotel, and deliberate generic-search skipping. It stops further live lookups after quota/authentication errors and records blocked scenarios separately from passes. No booking flow runs in this harness; reports are generated locally under `artifacts/live-discovery-scenarios-report.json`.
 
 SupervisorAgent reviews worker outcomes and selects a typed delegation: search, inspect, retry_room, checkout, needs_human or stop. Allowed delegations are recomputed from current evidence. Generic requests cannot skip the highest-ranked untried candidate, and named-hotel requests cannot substitute another property. A transient room failure may be retried once or trigger a fresh UI search; known price/policy failures cannot use that recovery. There are at most two searches, three total property inspections, twelve supervisor decisions and two room observations per inspection. Re-search reuses the isolated browser session. Worker prompts receive compact bounded evidence, and events record model latency/input size without exposing private reasoning.
 
@@ -87,7 +99,7 @@ Frontend
   └─ POST /api/runs/:id/cancel|close
               ↓
 LangGraph.js (validated state + in-process checkpoints)
-  START → IntakeAgent → PolicyAgent → SupervisorAgent (Gemini)
+  START → IntakeAgent → PolicyAgent → DiscoveryAgent → SupervisorAgent (Gemini)
                                            ├─ search → SearchAgent (Gemini browser loop) + deterministic ranking
                                            ├─ inspect/retry → RoomAgent (Gemini rate decisions + hard verification)
                                            ├─ needs_human/stop → safe terminal outcome
@@ -106,6 +118,7 @@ Each agent performs real, separate work:
 |---|---|
 | IntakeAgent | Correct noisy language with Gemini, extract structured intent, and validate every field before execution. |
 | PolicyAgent | Bind navigation to the requested provider domain, INR budget cap, and forbidden actions. |
+| DiscoveryAgent | Use Google-grounded public evidence to assess hotel/location identity; cite sources and request clarification for ambiguity. |
 | SupervisorAgent | Use Gemini to delegate from worker evidence, bounded recovery choices and remaining budgets. |
 | SearchAgent | Observe the live search UI, ask the model for the next guarded tool, verify outcomes, replan after failures and extract live cards. |
 | RankingAgent | Compare complete displayed totals, including separately displayed taxes. |
@@ -188,6 +201,10 @@ The browser stops at the first guest-details page. Payment is outside the implem
 ```powershell
 npm test
 npm run test:all
+# Controlled Google-search contracts, identity handoff and safe citation UI:
+npm run test:discovery
+# Two actual Google-grounded identity lookups; no supplier browser is opened:
+npm run test:discovery:live
 # Actual model decisions against an isolated supplier fixture, not live inventory:
 npm run test:agentic:live
 # Actual supervisor/room-model decisions against controlled evidence, not live hotels:

@@ -7,6 +7,11 @@ for (const value of ["Agentic hotel search and pre-booking", "Coordinated agents
   assert.match(html, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 }
 assert.doesNotMatch(html, /buildDemoHotels|Computer route is a visual simulation|LangGraph|Playwright|Booking\.com|local Chrome|SSE observability|hotel availability API/i);
+assert.match(html, /DiscoveryAgent/);
+assert.match(html, /discovery.completed/);
+assert.match(html, /Hotel identity lookup/);
+assert.match(html, /data.agents.length/);
+assert.doesNotMatch(html, /7 specialized agents/);
 
 const { server, runs } = await createAgentServer({ html });
 assert.equal(typeof server.listen, "function");

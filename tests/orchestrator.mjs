@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { bookingFieldReadiness, bookingRoomEvidence, browserStorageIssue } from "../scripts/agent-orchestrator.mjs";
 import { AgentOrchestrator, AGENTS, ORCHESTRATION, bookingDateLabel, bookingDateLabelPattern, bookingDateSummaryMatches, bookingEntryUrl, bookingLocationMatchScore, bookingOccupancyControlId, bookingSearchSubmissionMatches, bookingVisibleSearchStateMatches, chooseBookingSuggestion, classifySearchFailure, compareHotelCandidates, displayedTotalInr, hotelNameMatchScore, isBookingLandingPage, isBookingTemporaryFailure, parseBookingOccupancySummary, parseReviewRating, publicAgentErrorMessage, shouldBlockBrowserResource, universalCandidatesFromLinks } from "../scripts/agent-orchestrator.mjs";
 
-assert.deepEqual(AGENTS, ["IntakeAgent", "PolicyAgent", "SupervisorAgent", "SearchAgent", "RankingAgent", "RoomAgent", "CheckoutAgent", "SafetyAgent"]);
+assert.deepEqual(AGENTS, ["IntakeAgent", "PolicyAgent", "DiscoveryAgent", "SupervisorAgent", "SearchAgent", "RankingAgent", "RoomAgent", "CheckoutAgent", "SafetyAgent"]);
 const readinessGoal = { destination: "Pune", checkIn: "2026-11-11", checkOut: "2026-11-12", adults: 1, rooms: 1 };
 const readinessState = { destination: "Pune", dateSummary: "Nov 11 — Nov 12", occupancy: "1 adult · 0 children · 1 room" };
 assert.deepEqual(bookingFieldReadiness(readinessState, readinessGoal, { value: "Pune", text: "Pune" }), { destination: true, dates: true, occupancy: true });
@@ -20,7 +20,7 @@ assert.equal(ORCHESTRATION.stateSchema, "Zod");
 assert.equal(ORCHESTRATION.checkpointer, "MemorySaver");
 assert.equal(ORCHESTRATION.humanInterrupt, "humanApproval");
 assert.equal(ORCHESTRATION.maxRoomCandidates, 3);
-assert.deepEqual(ORCHESTRATION.nodes, ["intake", "policy", "supervisor", "search", "room", "checkout", "safety", "humanApproval"]);
+assert.deepEqual(ORCHESTRATION.nodes, ["intake", "policy", "webDiscovery", "supervisor", "search", "room", "checkout", "safety", "humanApproval"]);
 assert.equal(displayedTotalInr("₹8,000 ₹5,600", "+ ₹280 taxes and fees"), 5880);
 assert.equal(displayedTotalInr("₹12,400", "Includes taxes and fees"), 12400);
 assert.equal(displayedTotalInr("Price unavailable", "+ ₹280 taxes"), null);

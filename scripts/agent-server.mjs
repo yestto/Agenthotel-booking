@@ -111,6 +111,7 @@ export async function createAgentServer({ orchestratorFactory, html, intakeParse
           intakeMode: process.env.GEMINI_API_KEY ? "llm-assisted" : "deterministic-fallback",
           browserActionMode: process.env.GEMINI_API_KEY ? "agentic" : "unavailable",
           workflowActionMode: process.env.GEMINI_API_KEY ? "supervised-agentic" : "unavailable",
+          discoveryMode: process.env.GEMINI_API_KEY ? "google-search-grounding" : "unavailable",
           activeRunId: active?.id || null,
           activeRunStatus: active?.orchestrator.status || null,
         });

@@ -42,6 +42,10 @@
     .clarification { margin:10px 0 0; padding:11px 13px; border:1px solid #9fc5e8; border-radius:12px; background:#eef7ff; color:#174d78; font-size:12px; }
     .route { margin:10px 0 0; padding:10px 12px; border:1px solid #b6d8ca; border-radius:12px; background:#edf9f4; color:#24594d; font-size:12px; font-weight:750; }
     .main { display:grid; gap:20px; }
+    .discovery { padding:22px; }
+    .discovery p,.discovery li { font-size:12px; }
+    .discovery a { color:var(--blue); overflow-wrap:anywhere; }
+    .discovery iframe { width:100%; height:110px; border:0; margin-top:12px; }
     .agents,.timeline,.receipt,.tools { padding:22px; }
     .section-head { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:16px; }
     .section-head h2 { margin-bottom:3px; font:800 22px/1.1 Georgia,serif; }
@@ -118,6 +122,7 @@
           <div class="agent-grid" id="agents">
             <article class="agent" data-agent="IntakeAgent"><span class="dot"></span><b>Intake</b><small>Correct messy language and validate the request</small></article>
             <article class="agent" data-agent="PolicyAgent"><span class="dot"></span><b>Policy</b><small>Set tools and safety boundary</small></article>
+            <article class="agent" data-agent="DiscoveryAgent"><span class="dot"></span><b>Web discovery</b><small>Check hotel identity with cited public sources</small></article>
             <article class="agent" data-agent="SearchAgent"><span class="dot"></span><b>Search</b><small>Observe, decide, act and verify the live page</small></article>
             <article class="agent" data-agent="RankingAgent"><span class="dot"></span><b>Selection</b><small>Best rating in budget, or exact named hotel</small></article>
             <article class="agent" data-agent="RoomAgent"><span class="dot"></span><b>Room</b><small>Assess observed rates, choose and reverify</small></article>
@@ -133,6 +138,13 @@
           <div class="timeline-list" id="timeline"><div class="empty">Start a request to watch real agent events arrive from the local orchestrator.</div></div>
         </section>
 
+        <section class="card discovery" id="discovery" hidden aria-label="Web discovery evidence">
+          <div class="eyebrow">Public web evidence · not room availability</div><h2>Hotel identity lookup</h2>
+          <p id="discoverySummary"></p><div id="discoveryClaims"></div>
+          <iframe id="searchSuggestions" title="Search suggestions" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" hidden></iframe>
+          <p class="sub">Source links are for review only. The agents retain your chosen supplier and verify rooms and prices through its live interface.</p>
+        </section>
+
         <section class="card receipt" id="receipt">
           <div class="boundary"><div>🛑</div><div><b>Protected checkout boundary reached</b>No personal information was entered. No booking was submitted. No payment was started.</div></div>
           <div class="facts"><div class="fact"><small>Provider</small><strong id="provider">—</strong></div><div class="fact"><small>Route</small><strong id="providerMode">—</strong></div><div class="fact"><small>Selected hotel</small><strong id="hotel">—</strong></div><div class="fact"><small>Guest rating</small><strong id="rating">—</strong></div><div class="fact"><small>Room availability</small><strong id="availability">—</strong></div><div class="fact"><small>Verified displayed total</small><strong id="total">—</strong></div><div class="fact"><small>Browser state</small><strong>Read-only</strong></div></div>
@@ -143,6 +155,7 @@
           <div class="section-head"><div><div class="eyebrow">Safety, recovery and audit controls</div><h2>Agent execution controls</h2></div></div>
           <div class="tool-grid">
             <div class="tool"><strong>AI language understanding</strong><small>Spelling correction, intent extraction, structured validation</small></div>
+            <div class="tool"><strong>Source-linked discovery</strong><small>Hotel/location evidence, ambiguity checks, cited public sources</small></div>
             <div class="tool"><strong>Coordinated workflow</strong><small>AI delegation, evidence-driven recovery, bounded checkpoints</small></div>
             <div class="tool"><strong>AI browser decisions</strong><small>Live observations, guarded tools, result checks and replanning</small></div>
             <div class="tool"><strong>Policy enforcement</strong><small>Approved navigation and purpose-limited actions</small></div>
@@ -154,7 +167,7 @@
     <footer>Availability and prices are read from the supplier’s visible booking flow and verified before handoff.</footer>
   </div>
   <script>
-    const els = Object.fromEntries(["runtime","offline","clarification","route","plan","query","start","stop","status","runId","timeline","receipt","provider","providerMode","hotel","rating","availability","total","proof"].map(id => [id, document.getElementById(id)]));
+    const els = Object.fromEntries(["runtime","offline","clarification","route","plan","discovery","discoverySummary","discoveryClaims","searchSuggestions","query","start","stop","status","runId","timeline","receipt","provider","providerMode","hotel","rating","availability","total","proof"].map(id => [id, document.getElementById(id)]));
     let runId = null;
     let source = null;
     let runStatus = "idle";
@@ -195,7 +208,7 @@
           setStatus("Low disk space", "failed");
           els.runtime.querySelector("span").textContent = "Agent service online · Browser needs free disk space";
         }
-        if (data.browserActionMode === "agentic" && browserReady) els.runtime.querySelector("span").textContent = "AI browser decisions ready · 7 specialized agents";
+        if (data.browserActionMode === "agentic" && browserReady) els.runtime.querySelector("span").textContent = `AI browser decisions ready · ${data.agents.length} workflow roles`;
         if (data.browserActionMode === "unavailable" && !data.activeRunId) {
           els.start.disabled = true;
           els.clarification.textContent = "Configure the AI service on the local runtime to enable autonomous browser decisions.";
@@ -261,6 +274,7 @@
         els.plan.textContent = `Supervisor decision: ${event.message}`;
         els.plan.hidden = false;
       }
+      if (event.type === "discovery.completed") showDiscovery(event.evidence);
 
       if (event.type === "boundary.reached") {
         runStatus = "awaiting_human";
@@ -277,6 +291,34 @@
         els.proof.classList.add("visible");
       }
       if (event.type === "run.failed" || event.type === "run.cancelled" || event.type === "run.completed") finish(event.type, event.message);
+    }
+
+    function showDiscovery(evidence) {
+      if (evidence.status === "skipped") return;
+      els.discovery.hidden = false;
+      els.discoverySummary.textContent = `${evidence.status === "consistent" ? "Source-supported identity" : evidence.status === "ambiguous" ? "Please clarify the hotel/location" : "Identity not confirmed"}: ${evidence.summary}`;
+      els.discoveryClaims.replaceChildren();
+      for (const claim of evidence.claims || []) {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = claim.text;
+        for (const id of claim.sourceIds || []) {
+          const citation = evidence.sources?.find(source => source.id === id);
+          if (!citation) continue;
+          let url;
+          try { url = new URL(citation.url); } catch { continue; }
+          if (url.protocol !== "https:" || url.username || url.password) continue;
+          const link = document.createElement("a");
+          link.textContent = ` [${citation.title}]`;
+          link.href = url.href;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          paragraph.append(link);
+        }
+        els.discoveryClaims.append(paragraph);
+      }
+      els.searchSuggestions.hidden = !evidence.searchSuggestions;
+      // Provider attribution HTML stays in an opaque, script-disabled sandbox, never the app DOM.
+      els.searchSuggestions.srcdoc = evidence.searchSuggestions || "";
     }
 
     function finish(type, message = "") {
@@ -335,6 +377,9 @@
       source?.close();
       resetAgentCards();
       els.plan.hidden = true;
+      els.discovery.hidden = true;
+      els.discoveryClaims.replaceChildren();
+      els.searchSuggestions.srcdoc = "";
       els.timeline.replaceChildren();
       els.receipt.classList.remove("visible");
       els.proof.classList.remove("visible");

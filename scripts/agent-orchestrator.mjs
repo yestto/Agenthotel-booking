@@ -10,9 +10,10 @@ import { assertAllowedUrl, bookingSearchText, budgetContains, budgetLabel, norma
 import { parseTravelRequestHybrid } from "./llm-intake.mjs";
 import { assertObservedControl, decideBrowserAction, observeBrowserControls, runBrowserActionLoop, validateBrowserAction } from "./browser-agent.mjs";
 import { WORKFLOW_LIMITS, decideRoomAction, decideSupervisorAction, recoverableWorkflowFailure, supervisorObservation, validateRoomDecision, validateSupervisorDecision } from "./workflow-agent.mjs";
+import { discoverHotel } from "./web-discovery.mjs";
 
-const AGENTS = ["IntakeAgent", "PolicyAgent", "SupervisorAgent", "SearchAgent", "RankingAgent", "RoomAgent", "CheckoutAgent", "SafetyAgent"];
-const GRAPH_NODES = ["intake", "policy", "supervisor", "search", "room", "checkout", "safety", "humanApproval"];
+const AGENTS = ["IntakeAgent", "PolicyAgent", "DiscoveryAgent", "SupervisorAgent", "SearchAgent", "RankingAgent", "RoomAgent", "CheckoutAgent", "SafetyAgent"];
+const GRAPH_NODES = ["intake", "policy", "webDiscovery", "supervisor", "search", "room", "checkout", "safety", "humanApproval"];
 const MAX_ROOM_CANDIDATES = WORKFLOW_LIMITS.inspections;
 const NONESSENTIAL_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 
@@ -27,12 +28,14 @@ export const ORCHESTRATION = Object.freeze({
   humanInterrupt: "humanApproval",
   browserDecisionLoop: "observe-decide-act-verify",
   workflowDecisionLoop: "model-supervisor-workers",
+  discoveryTool: "google-search-grounding",
 });
 
 const HotelGraphState = z.object({
   task: z.string().min(20),
   goal: z.any().optional(),
   runPolicy: z.any().optional(),
+  discovery: z.any().optional(),
   candidates: z.array(z.any()).default([]),
   rankedCandidates: z.array(z.any()).default([]),
   candidateIndex: z.number().int().nonnegative().default(0),
@@ -1571,6 +1574,22 @@ function compileHotelGraph(context, setStatus, checkpointer) {
       return { goal: await intake.run(state.task, context) };
     })
     .addNode("policy", async (state) => ({ runPolicy: await policy.run(state.goal, context) }))
+    .addNode("webDiscovery", async (state) => {
+      setStatus("discovering");
+      context.trace.emit("DiscoveryAgent", "agent.started", "Checking public identity evidence before the live supplier search");
+      let discovery;
+      try { discovery = await context.discoverySearch(state.goal, { signal: context.signal }); }
+      catch (error) {
+        ensureActive(context.signal);
+        discovery = { status: "unavailable", summary: error.message, sources: [], claims: [] };
+      }
+      ensureActive(context.signal);
+      context.trace.emit("DiscoveryAgent", "discovery.completed", discovery.summary, discovery);
+      if (discovery.status === "ambiguous") throw Object.assign(new Error(`Human input needed: ${discovery.summary}`), { code: "NEEDS_HUMAN" });
+      context.trace.emit("DiscoveryAgent", "agent.completed", discovery.status === "unavailable"
+        ? "Web lookup unavailable; continuing with the unchanged request and live supplier verification" : discovery.summary);
+      return { discovery };
+    })
     .addNode("supervisor", async (state) => {
       setStatus("planning");
       return supervisor.run(state, context);
@@ -1640,7 +1659,8 @@ function compileHotelGraph(context, setStatus, checkpointer) {
     })
     .addEdge(START, "intake")
     .addEdge("intake", "policy")
-    .addEdge("policy", "supervisor")
+    .addEdge("policy", "webDiscovery")
+    .addEdge("webDiscovery", "supervisor")
     .addConditionalEdges("supervisor", (state) => ["inspect", "retry_room"].includes(state.nextAction) ? "room" : state.nextAction, ["search", "room", "checkout"])
     .addEdge("search", "supervisor")
     .addEdge("room", "supervisor")
@@ -1653,7 +1673,7 @@ function compileHotelGraph(context, setStatus, checkpointer) {
 
 export class AgentOrchestrator {
   constructor({ runId = `run_${crypto.randomUUID()}`, onEvent, holdAtBoundary = false, intakeParser = parseTravelRequestHybrid, browserDecider,
-    supervisorDecider = decideSupervisorAction, roomDecider = decideRoomAction } = {}) {
+    supervisorDecider = decideSupervisorAction, roomDecider = decideRoomAction, discoverySearch = discoverHotel } = {}) {
     this.runId = runId;
     this.holdAtBoundary = holdAtBoundary;
     this.controller = new AbortController();
@@ -1667,11 +1687,12 @@ export class AgentOrchestrator {
     this.intakeParser = intakeParser;
     this.supervisorDecider = supervisorDecider;
     this.roomDecider = roomDecider;
+    this.discoverySearch = discoverySearch;
   }
 
   async run(task) {
     const context = { trace: this.trace, tools: this.tools, signal: this.controller.signal, intakeParser: this.intakeParser,
-      supervisorDecider: this.supervisorDecider, roomDecider: this.roomDecider };
+      supervisorDecider: this.supervisorDecider, roomDecider: this.roomDecider, discoverySearch: this.discoverySearch };
     try {
       const graph = compileHotelGraph(context, (status) => { this.status = status; }, this.checkpointer);
       const graphConfig = { configurable: { thread_id: this.runId }, recursionLimit: WORKFLOW_LIMITS.decisions * 3 + 10 };
