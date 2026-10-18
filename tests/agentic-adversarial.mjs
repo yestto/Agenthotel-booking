@@ -74,6 +74,25 @@ try {
     await recovered.searchWithAI(goal);
     assert.equal((await recovered.readBookingSearchState(goal)).verified, true);
   });
+  await check('Visible fields cannot override results for another destination URL', async () => {
+    await page.goto('https://www.booking.com/searchresults.html?ss=Mumbai');
+    await page.setContent('<input name="ss" value="Pune"><div data-testid="searchbox-dates-container">Nov 11 — Nov 12</div><div data-testid="occupancy-config">1 adult · 0 children · 1 room</div><article data-testid="property-card">Stale result</article>');
+    assert.equal((await tools.readBookingSearchState(goal)).verified, false);
+  });
+  await check('Field entry cannot claim pre-existing results without actually submitting', async () => {
+    await page.goto('https://www.booking.com/');
+    await page.setContent('<input name="ss" value="Pune"><div data-testid="searchbox-dates-container">Nov 11 — Nov 12</div><div data-testid="occupancy-config">1 adult · 0 children · 1 room</div><article data-testid="property-card">Old result</article>');
+    let submissions = 0;
+    const verifiedEntry = new BrowserToolGateway({ trace: { emit: () => {} }, signal: new AbortController().signal,
+      browserDecider: async ({ observation }) => decision(observation.availableSkills[0]) });
+    verifiedEntry.page = page;
+    verifiedEntry.configureBookingDestination = async () => { verifiedEntry.bookingDestinationSelection = { value: 'Pune', text: 'Pune' }; };
+    verifiedEntry.configureBookingDates = async () => {};
+    verifiedEntry.configureBookingOccupancy = async () => {};
+    verifiedEntry.submitBookingSearch = async () => { submissions++; };
+    await verifiedEntry.searchWithAI(goal);
+    assert.equal(submissions, 1, 'Changing the form is not evidence that its old inventory was searched for this trip');
+  });
   await check('Preloaded matching results cannot bypass visible field-entry proof', async () => {
     await page.goto('https://www.booking.com/');
     await page.setContent('<input name="ss" value="Pune"><div data-testid="searchbox-dates-container">Nov 11 — Nov 12</div><div data-testid="occupancy-config">1 adult · 0 children · 1 room</div><article data-testid="property-card">Preloaded result</article>');

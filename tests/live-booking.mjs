@@ -5,11 +5,14 @@ const base = process.env.AGENT_BASE_URL || "http://127.0.0.1:4180";
 const scenarios = [
   { name: "Pune named hotel, one night", query: "book Hyatt Place Pune Hinjawadi on 22 December 2026 for 1 adult 1 room under INR 10,000", hotel: "Hyatt Place Pune Hinjawadi", max: 10000 },
   { name: "Pune repeated with spelling mistakes", query: "need Hyatt Place Pune Hinjawadi pune for 1 adlt 1 rom on 22 december 2026 buget under 10000", hotel: "Hyatt Place Pune Hinjawadi", max: 10000 },
-  { name: "Pune exact hotel over budget", query: "book Hyatt Place Pune Hinjawadi on 22 December 2026 for 1 adult 1 room under INR 1,000", overBudget: true },
+  { name: "Pune exact hotel over budget", query: "book Hyatt Place Pune Hinjawadi on 22 December 2026 for 1 adult 1 room under INR 1,000 total", overBudget: true },
   { name: "Kolkata generic hotel, budget range and cancellation", query: "find high rating hotel in Kolkata New Town 8-10 january 2027 for 2 adlts 1 room budget 7000-18000 free cancellation", min: 7000, max: 18000, freeCancellation: true, rated: true },
   { name: "Pune three adults and two rooms", query: "book Hyatt Place Pune Hinjawadi in Pune for 3 adults 2 rooms on 22 December 2026 total budget under 30000", hotel: "Hyatt Place Pune Hinjawadi", max: 30000, rooms: 2, adults: 3 },
   { name: "Vizag original noisy request, five nights", query: "find a hotel in vizag andrapardesh under 9000 budget for 1 adult 1 room from 11 of november to 16 of november with high rating", max: 9000, rooms: 1, adults: 1, rated: true },
-  { name: "Bengaluru breakfast and generous budget", query: "Find a hotel in Bengaluru, 15-17 December 2026, for 2 adults and 1 room, under INR 50000 total, with breakfast", max: 50000, breakfast: true, adults: 2, rooms: 1, rated: true },
+  { name: "Bengaluru breakfast and generous budget", query: "Find a hotel in Bengaluru, 15-17 December 2026, for 2 adults and 1 room, under INR 50000 total, with breakfast", max: 50000, breakfast: true, adults: 2, rooms: 1, rated: true, physicalCity: /Bangalore|Bengaluru/i },
+  { name: "Ramanagara observed named hotel over budget", query: "Find Ambara Kovilakam Private Pool Villa By Travent Mug in Ramanagara, Karnataka from 15 to 17 December 2026 for 2 adults and 1 room under INR 1000 total", overBudget: true },
+  { name: "Chennai generic one night and cancellation", query: "find highest rated hotel in chennai tamil nadu on 14 january 2027 for 1 adult 1 room under INR 30000 total with free cancellation", max: 30000, freeCancellation: true, adults: 1, rooms: 1, rated: true, physicalCity: /Chennai|Madras/i },
+  { name: "Bengaluru observed named property with breakfast", query: 'Find hotel named "Tulip Inn Bengaluru Hoodi" in Bengaluru, Karnataka from 15 to 17 December 2026 for 2 adults and 1 room under INR 50000 total with breakfast', hotel: "Tulip Inn Bengaluru Hoodi", max: 50000, breakfast: true, adults: 2, rooms: 1, physicalCity: /Bangalore|Bengaluru/i },
 ];
 const report = [];
 for (const scenario of scenarios.filter((scenario) => process.argv.length < 3 || process.argv.slice(2).some((term) => scenario.name.includes(term)))) {
@@ -22,7 +25,7 @@ for (const scenario of scenarios.filter((scenario) => process.argv.length < 3 ||
     runId = started.runId;
     let state;
     let sequence = 0;
-    const deadline = Date.now() + 240000;
+    const deadline = Date.now() + 900000;
     do {
       state = await fetch(`${base}/api/runs/${runId}`).then((result) => result.json());
       for (const event of state.events.filter((event) => event.seq > sequence)) console.log(`${scenario.name}: ${event.message}`);
@@ -41,6 +44,7 @@ for (const scenario of scenarios.filter((scenario) => process.argv.length < 3 ||
       assert.equal(state.status, "awaiting_human", state.error || "Did not reach guest details");
       if (scenario.hotel) assert.equal(boundary.hotel.toLowerCase(), scenario.hotel.toLowerCase());
       assert.equal(boundary.availability, "available");
+      assert.equal(boundary.checkoutSummaryVerified, true, "Guest fields alone are not proof that the current booking summary matches the selected stay");
       assert.ok(boundary.totalInr <= scenario.max);
       if (scenario.min) assert.ok(boundary.totalInr >= scenario.min);
       if (scenario.freeCancellation) assert.equal(boundary.roomPolicy.freeCancellation, true);
@@ -48,6 +52,12 @@ for (const scenario of scenarios.filter((scenario) => process.argv.length < 3 ||
       if (scenario.rooms) assert.equal(boundary.rooms, scenario.rooms);
       if (scenario.adults) assert.equal(boundary.adults, scenario.adults);
       if (scenario.rated) assert.ok(Number.isFinite(boundary.rating), 'Highest-rating selection must have a verified guest rating');
+      if (scenario.physicalCity) {
+        const location = state.events.findLast((event) => event.type === 'property.location' && event.evidence.hotel === boundary.hotel)?.evidence;
+        assert.equal(location?.status, 'confirmed', 'A matching search query alone is not proof of the selected property location');
+        assert.match(location.city, scenario.physicalCity);
+        report.at(-1).physicalLocation = location;
+      }
     }
     report.at(-1).passed = true;
   } catch (error) {

@@ -57,4 +57,73 @@ try {
   for (const skill of ['destination', 'dates', 'submit']) assert.ok(events.some((event) => event.type === 'agent.action' && event.evidence.tool === skill));
   assert.equal((await tools.readBookingSearchState(goal)).verified, true);
   console.log((live ? 'Live AI decisions' : 'Controlled model decisions') + ': visible browser skills and independent result verification passed (local supplier fixture, not live inventory).');
+
+  const temporaryPage = (mode) => `<h1>Oops!</h1><p>Something went wrong on our end. Error code: 502</p>
+    <button onclick="location.href='/retry-agent/retry?mode=${mode}'">Try again</button>`;
+  let retryClicks = 0;
+  await page.route('https://www.booking.com/retry-agent/**', async (route) => {
+    const url = new URL(route.request().url());
+    const mode = url.searchParams.get('mode');
+    if (url.pathname.endsWith('/error')) return route.fulfill({ contentType: 'text/html', body: temporaryPage(mode) });
+    retryClicks++;
+    if (mode === 'delayed') {
+      await new Promise((resolve) => setTimeout(resolve, 2200));
+      return route.fulfill({ contentType: 'text/html', body: '<input name="ss" value="Pune"><div data-testid="searchbox-dates-container">Wed, Nov 11 — Thu, Nov 12</div><div data-testid="occupancy-config">1 adult · 0 children · 1 room</div><article data-testid="property-card">Recovered fixture</article>' });
+    }
+    return route.fulfill({ contentType: 'text/html', body: temporaryPage(mode) });
+  });
+  await page.goto('https://www.booking.com/');
+  tools.bookingRecoveryUsed = false;
+  const configureDestination = tools.configureBookingDestination.bind(tools);
+  tools.configureBookingDestination = async (trip) => {
+    await configureDestination(trip);
+    await page.goto('https://www.booking.com/retry-agent/error?mode=persistent');
+  };
+  let recoveryDecisions = 0;
+  tools.browserDecider = async ({ observation }) => {
+    recoveryDecisions++;
+    if (recoveryDecisions === 1) return { action: 'destination', target: '', field: 'none', key: 'none', summary: 'Choose destination' };
+    assert.deepEqual(observation.availableSkills, [], 'A supplier error page must not offer absent form skills');
+    const retry = observation.controls.find((control) => control.name === 'Try again');
+    assert.ok(retry, 'The agent must choose the visible supplier retry control');
+    return { action: 'click', target: retry.id, field: 'none', key: 'none', summary: 'Retry the temporary supplier failure' };
+  };
+  await assert.rejects(tools.searchWithAI(goal), /temporarily unavailable \(502\) after one visible retry/);
+  assert.equal(retryClicks, 1, 'Raw model-selected Try again must share the one-retry budget');
+  assert.equal(recoveryDecisions, 2, 'An exhausted persistent 502 must stop before another model decision');
+  tools.configureBookingDestination = configureDestination;
+
+  retryClicks = 0;
+  tools.bookingRecoveryUsed = false;
+  tools.bookingDestinationSelection = { value: 'Pune', text: 'Pune' };
+  await page.goto('https://www.booking.com/retry-agent/error?mode=delayed');
+  const delayedStart = Date.now();
+  assert.equal(await tools.recoverBookingTemporaryFailure(), true);
+  assert.equal(retryClicks, 1, 'Slow navigation must not cause another retry click');
+  assert.ok(Date.now() - delayedStart < 10_000, 'Delayed retry should finish within the existing bounded recovery allowance');
+  assert.equal((await tools.readBookingSearchState(goal)).verified, true, 'A retry slower than the old document load must still verify its actual result');
+
+  retryClicks = 0;
+  await page.goto('https://www.booking.com/retry-agent/error?mode=persistent');
+  const retryCancellation = new AbortController();
+  const cancellationTools = new BrowserToolGateway({ trace: { emit() {} }, signal: retryCancellation.signal });
+  cancellationTools.page = page;
+  const cancellationStarted = Date.now();
+  const cancelTimer = setTimeout(() => retryCancellation.abort(), 2500);
+  try {
+    await assert.rejects(cancellationTools.recoverBookingTemporaryFailure(), { name: 'AbortError' });
+    assert.ok(Date.now() - cancellationStarted < 5000, 'Cancellation must interrupt recovery observation before its 15-second allowance expires');
+    assert.equal(retryClicks, 1, 'Cancellation must not dispatch an additional retry');
+  } finally { clearTimeout(cancelTimer); }
+
+  tools.bookingRecoveryUsed = false;
+  await page.setContent('<p>Room 502 has a Try again option, not a supplier error.</p><button onclick="this.dataset.clicked=\'yes\'">Try again</button>');
+  let ordinaryDecisions = 0;
+  tools.browserDecider = async ({ observation }) => ({ action: ordinaryDecisions++ ? 'stop' : 'click',
+    target: ordinaryDecisions === 1 ? observation.controls.find((control) => control.name === 'Try again').id : '',
+    field: 'none', key: 'none', summary: 'Inspect ordinary control' });
+  await assert.rejects(tools.searchWithAI(goal), /could not establish a safe next action/);
+  assert.equal(tools.bookingRecoveryUsed, false, 'Harmless room numbers or Try again labels must not consume supplier recovery');
+  assert.equal(await page.getByRole('button', { name: 'Try again' }).getAttribute('data-clicked'), 'yes');
+  console.log('Agent-selected 502 retry shares the bounded budget, delayed retry is observed, and harmless page text is not misclassified.');
 } finally { await browser.close(); }

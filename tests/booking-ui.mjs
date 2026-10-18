@@ -14,14 +14,15 @@ try {
   const tools = new BrowserToolGateway({ trace: { emit: (...event) => events.push(event) }, signal: new AbortController().signal });
   tools.page = page;
 
-  async function fixture({ suggestions, clearFirstSelection = false }) {
+  async function fixture({ suggestions, clearFirstSelection = false, geographicTerm = "", selectionSuffix = "" }) {
     await page.setContent(`<label>Destination <input name="ss"></label><ul role="listbox"></ul>`);
-    await page.evaluate(({ suggestions, clearFirstSelection }) => {
+    await page.evaluate(({ suggestions, clearFirstSelection, geographicTerm, selectionSuffix }) => {
       const input = document.querySelector("input");
       const list = document.querySelector("ul");
       let timer;
       let committed = false;
       window.selectionAttempts = 0;
+      window.completedQueries = [];
       input.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && !committed) input.value = "";
       });
@@ -30,13 +31,15 @@ try {
         clearTimeout(timer);
         list.replaceChildren();
         timer = setTimeout(() => {
-          for (const text of suggestions) {
+          window.completedQueries.push(input.value);
+          const available = geographicTerm && input.value !== geographicTerm ? ["Trending destination: Delhi\nDelhi, India"] : suggestions;
+          for (const text of available) {
             const item = document.createElement("li");
             item.dataset.testid = "autocomplete-result";
             item.innerText = text;
             item.addEventListener("click", () => {
               window.selectionAttempts += 1;
-              input.value = clearFirstSelection && window.selectionAttempts === 1 ? "" : text.split("\n")[0];
+              input.value = clearFirstSelection && window.selectionAttempts === 1 ? "" : text.split("\n")[0] + selectionSuffix;
               committed = Boolean(input.value);
               list.replaceChildren();
             });
@@ -44,7 +47,7 @@ try {
           }
         }, 1_400);
       });
-    }, { suggestions, clearFirstSelection });
+    }, { suggestions, clearFirstSelection, geographicTerm, selectionSuffix });
   }
 
   const namedGoal = { destination: "Pune, Maharashtra", hotelName: "Hyatt Place Pune Hinjawadi" };
@@ -54,10 +57,43 @@ try {
   assert.equal(await page.evaluate(() => window.selectionAttempts), 2, "A cleared selection must be recovered through another visible suggestion click");
   assert.match(tools.bookingDestinationSelection.text, /Maharashtra/);
 
+  await fixture({ suggestions: ["Tulip Inn Bengaluru Hoodi\nBangalore (Bengaluru), Karnataka, India"], selectionSuffix: ", Bangalore (Bengaluru), Karnataka, India" });
+  await tools.configureBookingDestination({ hotelName: "Tulip Inn Bengaluru Hoodi", destination: "Bengaluru, Karnataka" });
+  assert.equal(await page.evaluate(() => window.selectionAttempts), 1, "The exact hotel must not be discarded merely because the retained UI value includes a canonical city alias");
+  assert.equal(tools.bookingDestinationSelection.mode, undefined, "An exact named suggestion must not fall back to city search");
+
   await fixture({ suggestions: ["New Town\nEdinburgh, United Kingdom", "New Town\nKolkata, West Bengal, India"] });
   await tools.configureBookingDestination({ destination: "New Town, Kolkata, West Bengal" });
   assert.match(tools.bookingDestinationSelection.text, /Kolkata/);
   assert.equal(await page.evaluate(() => window.selectionAttempts), 1);
+
+  const namedFallbackGoal = Object.freeze({ ...namedGoal, supplier: "booking.com", checkIn: "2026-11-11", checkOut: "2026-11-12", adults: 1, rooms: 1, budgetInr: 9000 });
+  await fixture({ suggestions: ["Pune\nMaharashtra, India"], geographicTerm: "Pune, Maharashtra" });
+  await tools.configureBookingDestination(namedFallbackGoal);
+  assert.equal(await page.locator("input").inputValue(), "Pune", "When hotel suggestions are unavailable, the requested city must be selected visibly");
+  assert.equal(tools.bookingDestinationSelection.mode, "city");
+  assert.equal(await page.evaluate(() => window.selectionAttempts), 1, "Trending or wrong-place suggestions must never be clicked");
+  assert.equal(namedFallbackGoal.hotelName, namedGoal.hotelName, "Geographic fallback must leave the original named-hotel goal unchanged");
+  assert.ok((await page.evaluate(() => window.completedQueries)).some((term) => term.includes(namedGoal.hotelName)), "Named-hotel suggestions must be tried before the geographic fallback");
+  await page.setContent(`<input name="ss" value="Pune"><div data-testid="searchbox-dates-container">Wed, Nov 11 — Thu, Nov 12</div><div data-testid="occupancy-config">1 adult · 0 children · 1 room</div>
+    <article data-testid="property-card"><h2 data-testid="title">Hyatt Place Pune Hinjawadi</h2><span data-testid="price-and-discounted-price">₹8,000</span><a data-testid="title-link" href="https://www.booking.com/hotel/in/hyatt-place-pune-hinjawadi.html">Open hotel</a></article>
+    <article data-testid="property-card"><h2 data-testid="title">Hyatt Pune</h2><span data-testid="price-and-discounted-price">₹6,000</span><a data-testid="title-link" href="https://www.booking.com/hotel/in/hyatt-pune.html">Open hotel</a></article>`);
+  const cityCandidates = await tools.observeCandidates(namedFallbackGoal, {});
+  assert.equal(cityCandidates.length, 2);
+  assert.equal(cityCandidates[0].destinationConfirmed, true, "Matching city search evidence can establish geography only for the exact requested hotel card");
+  assert.equal(cityCandidates[1].destinationConfirmed, false, "Geographic fallback cannot substitute another property from the same city");
+  await page.locator('input[name="ss"]').fill("Mumbai");
+  assert.equal((await tools.observeCandidates(namedFallbackGoal, {}))[0].destinationConfirmed, false, "A stale city selection cannot prove the geography of a changed search");
+
+  await fixture({ suggestions: ["Conrad Bengaluru, Karnataka\nBengaluru, Karnataka, India", "Bengaluru, Karnataka\nKarnataka, India"] });
+  await tools.configureBookingDestination({ destination: "Bengaluru, Karnataka" });
+  assert.equal(await page.locator("input").inputValue(), "Bengaluru, Karnataka", "A generic city request must accept a combined city/state label without selecting a hotel");
+  assert.equal(await page.evaluate(() => window.selectionAttempts), 1);
+
+  await fixture({ suggestions: ["Bengaluru\nKarnataka, India"], geographicTerm: "Bangalore" });
+  await tools.configureBookingDestination({ destination: "Bengaluru, Karnataka" });
+  assert.deepEqual(await page.evaluate(() => window.completedQueries), ["Bengaluru", "Bangalore"], "Primary city and known city alias must be tried before a combined city/state phrase");
+  assert.equal(await page.locator("input").inputValue(), "Bengaluru");
 
   await page.route("https://www.booking.com/**", (route) => route.fulfill({
     contentType: "text/html",
@@ -78,6 +114,69 @@ try {
 
   await page.unroute("https://www.booking.com/**");
   const fullGoal = { supplier: "booking.com", destination: "Pune", checkIn: "2026-11-11", checkOut: "2026-11-12", adults: 1, rooms: 1 };
+  await page.route('https://www.booking.com/spa-search', route => route.fulfill({ contentType: 'text/html', body: `<input name="ss" value="Pune">
+    <div data-testid="searchbox-dates-container">Wed, Nov 11 — Thu, Nov 12</div><div data-testid="occupancy-config">1 adult · 0 children · 1 room</div>
+    <button onclick="document.querySelector('article').hidden=false">Search</button><article data-testid="property-card" hidden>SPA fixture result</article>` }));
+  await page.goto('https://www.booking.com/spa-search');
+  tools.bookingDestinationSelection = { value: 'Pune', text: 'Pune' };
+  const spaStarted = Date.now();
+  await tools.submitBookingSearch(fullGoal, 1);
+  assert.ok(Date.now() - spaStarted < 5000, 'A visible SPA result must be verified without waiting for nonexistent document navigation');
+  await page.unroute('https://www.booking.com/spa-search');
+
+  let retryClicks = 0;
+  let submittedSearches = 0;
+  const searchFields = (destination = "Pune", dates = "Wed, Nov 11 — Thu, Nov 12", occupancy = "1 adult · 0 children · 1 room") => `<input name="ss" value="${destination}">
+    <div data-testid="searchbox-dates-container">${dates}</div><div data-testid="occupancy-config">${occupancy}</div>`;
+  const temporaryPage = (mode) => `<h1>Oops!</h1><p>Something went wrong on our end. Error code: 502</p><button onclick="location.href='/retry-fixture/retry?mode=${mode}'">Try again</button>`;
+  await page.route("https://www.booking.com/retry-fixture/**", (route) => {
+    const url = new URL(route.request().url());
+    const mode = url.searchParams.get("mode");
+    if (url.pathname.endsWith("/start")) return route.fulfill({ contentType: "text/html", body: `${searchFields()}<button onclick="location.href='/retry-fixture/error?mode=${mode}'">Search</button>` });
+    if (url.pathname.endsWith("/error")) {
+      submittedSearches++;
+      return route.fulfill({ contentType: "text/html", body: temporaryPage(mode) });
+    }
+    retryClicks++;
+    const body = mode === "persistent" ? temporaryPage(mode)
+      : mode === "wrong-dates" ? `${searchFields("Pune", "Thu, Nov 12 — Fri, Nov 13")}<article data-testid="property-card">Wrong trip result</article>`
+      : mode === "wrong-occupancy" ? `${searchFields("Pune", undefined, "2 adults · 0 children · 1 room")}<article data-testid="property-card">Wrong trip result</article>`
+      : `${searchFields()}<article data-testid="property-card">Recovered fixture result</article>`;
+    return route.fulfill({ contentType: "text/html", body });
+  });
+  for (const mode of ["matching", "persistent", "wrong-dates", "wrong-occupancy"]) {
+    retryClicks = 0;
+    submittedSearches = 0;
+    tools.bookingRecoveryUsed = false;
+    tools.bookingDestinationSelection = { value: "Pune", text: "Pune" };
+    await page.goto(`https://www.booking.com/retry-fixture/start?mode=${mode}`);
+    const originalGoto = page.goto;
+    page.goto = async () => assert.fail("502 recovery must use the visible supplier retry control, not a direct URL");
+    try {
+      if (mode === "matching") {
+        const recoveredStart = Date.now();
+        await tools.submitBookingSearch(fullGoal, 1);
+        assert.ok(Date.now() - recoveredStart < 10_000, "A 502 page must not consume the entire result verification timeout before recovery");
+        assert.equal((await tools.readBookingSearchState(fullGoal)).verified, true);
+        assert.ok(events.some((event) => event[1] === "supplier.recovered"), "Successful recovery must be independently verified and reported");
+      } else if (mode === "persistent") {
+        await assert.rejects(tools.submitBookingSearch(fullGoal, 1), /temporarily unavailable \(502\) after one visible retry/);
+      } else {
+        await assert.rejects(tools.submitBookingSearch(fullGoal, 1), /recovered from its temporary 502 page.*did not retain matching search fields/);
+        assert.equal((await tools.readBookingSearchState(fullGoal)).verified, false, "Recovered inventory with wrong dates or occupancy must not be accepted");
+      }
+    } finally { page.goto = originalGoto; }
+    assert.equal(retryClicks, 1, "Supplier recovery must click Try again only once");
+    assert.equal(submittedSearches, 1, "Recovery must not silently submit a different trip");
+  }
+  tools.bookingRecoveryUsed = false;
+  await page.goto("https://www.booking.com/retry-fixture/start?mode=matching");
+  submittedSearches = 0;
+  await page.locator('[data-testid="searchbox-dates-container"]').evaluate((element) => { element.textContent = "Select dates"; });
+  await assert.rejects(tools.submitBookingSearch(fullGoal, 1), /changed or cleared a requested field before Search/);
+  assert.equal(submittedSearches, 0, "A stale completed checkpoint cannot submit cleared visible fields");
+  await page.unroute("https://www.booking.com/retry-fixture/**");
+
   let redirectToLanding = false;
   await page.route("https://www.booking.com/**", (route) => {
     const url = new URL(route.request().url());
@@ -150,6 +249,81 @@ try {
   await assert.rejects(tools.openCandidate({ ...observedCandidate, title: "An unrelated property" }), /title changed/);
   assert.equal(page.url(), "https://www.booking.com/observed-list", "A changed hotel card must not be clicked");
 
+  let propertyRequests = 0;
+  let propertyMode = "matching";
+  await page.route("https://www.booking.com/trip-property-list", route => route.fulfill({ contentType: "text/html", body: `<article data-testid="property-card"><span data-testid="title">Observed Hotel</span><a data-testid="title-link" href="/hotel/in/trip-property.html">Observed Hotel</a></article>` }));
+  await page.route("https://www.booking.com/hotel/in/trip-property.html", route => {
+    propertyRequests++;
+    if (propertyRequests === 1) return route.fulfill({ contentType: "text/html", body: `<h1>Oops!</h1><p>Error code: 502. Something went wrong on our end.</p><button onclick="location.reload()">Try again</button>` });
+    return route.fulfill({ contentType: "text/html", body: `<title>Property details</title><h2>Observed Hotel</h2><p class="hp_address_subtitle">Road, 411001 Pune, Maharashtra, India</p>
+      ${searchFields("Pune", propertyMode === "wrong-dates" ? "Thu, Nov 12 — Fri, Nov 13" : "Wed, Nov 11 — Thu, Nov 12", propertyMode === "wrong-guests" ? "2 adults · 0 children · 1 room" : "1 adult · 0 children · 1 room")}
+      <select id="hprt_nos_select_trip"><option selected value="0">0</option><option value="1">1</option></select>` });
+  });
+  for (const mode of ["matching", "wrong-dates", "wrong-guests"]) {
+    propertyMode = mode;
+    propertyRequests = 0;
+    tools.bookingRecoveryUsed = false;
+    await page.goto("https://www.booking.com/trip-property-list");
+    const opened = tools.openCandidate({ index: 0, title: "Observed Hotel", href: "https://www.booking.com/hotel/in/trip-property.html" }, fullGoal);
+    if (mode === "matching") assert.equal((await opened).locationEvidence.status, "confirmed");
+    else await assert.rejects(opened, /did not retain the requested dates and guests/);
+    assert.equal(propertyRequests, 2, "Property recovery must use exactly one visible retry, not repeated navigation");
+    assert.equal(await page.locator("#hprt_nos_select_trip").inputValue(), "0", "A property retry must not select a room before fresh trip verification");
+  }
+
+  await page.route("https://www.booking.com/hotel/in/conflicting-address.html", (route) => route.fulfill({ contentType: "text/html; charset=utf-8", body: `<title>Best Resort in Bangalore - Booking.com</title><h1>Best Resort in Bangalore</h1>
+    <p class="hp_address_subtitle">Best Resort in Bangalore, Bidadi, 562159 Rāmanagaram, India</p>
+    <select id="hprt_nos_select_test"><option value="0" selected>0</option><option value="1">1</option></select>` }));
+  await page.route("https://www.booking.com/address-list", (route) => route.fulfill({ contentType: "text/html", body: `<article data-testid="property-card"><span data-testid="title">Best Resort in Bangalore</span><a data-testid="title-link" href="/hotel/in/conflicting-address.html">Best Resort in Bangalore</a></article>` }));
+  await page.goto("https://www.booking.com/address-list");
+  await assert.rejects(tools.openCandidate({ index: 0, title: "Best Resort in Bangalore", href: "https://www.booking.com/hotel/in/conflicting-address.html" }, { destination: "Bengaluru, Karnataka" }), /visible address is in Rāmanagaram, not the requested Bengaluru/);
+  assert.equal(await page.locator("#hprt_nos_select_test").inputValue(), "0", "A matching marketing title with a conflicting physical city must be rejected before selecting rooms");
+  assert.ok(events.some((event) => event[1] === "property.location" && event[3].status === "conflict" && event[3].hotel === "Best Resort in Bangalore"), "Physical location evidence must identify the checked hotel");
+
+  for (const fixture of [
+    { id: "unconfirmed-address", title: "Observed Hotel", address: "Location available after booking", destination: "Bengaluru, Karnataka", error: /does not confirm the requested physical location/ },
+    { id: "conflicting-state", title: "Observed Hotel", address: "Road, 799120 Udaipur, Tripura, India", destination: "Udaipur, Rajasthan", error: /Udaipur, Tripura, not the requested Udaipur, Rajasthan/ },
+    { id: "unconfirmed-locality", title: "Observed Hotel", address: "New Town Resort, Park Street, Kolkata, West Bengal, India", destination: "New Town, Kolkata", error: /does not confirm the requested locality/ },
+    { id: "known-place-alias", title: "Observed Hotel", address: "Bidadi, Rāmanagaram 562159, Karnataka, India", destination: "Ramanagara, Karnataka", expectedCity: "Rāmanagaram" },
+    { id: "lookalike-property", title: "Taj Krishna", heading: "Taj Krishnan", address: "Road, Hyderabad, Telangana, India", destination: "Hyderabad, Telangana", error: /opened property did not match/ },
+    { id: "semantic-address-wrapper", title: "Observed Hotel", address: "New No 297, KEB Colony, 560048 Bangalore, India", destination: "Bengaluru, Karnataka", semanticMarkup: true, expectedCity: "Bangalore" },
+    { id: "contents-address-wrapper", title: "Observed Hotel", address: "New No 297, KEB Colony, 560048 Bangalore, India", destination: "Bengaluru, Karnataka", contentsMarkup: true, expectedCity: "Bangalore" },
+    { id: "h2-only-property-heading", title: "Observed Hotel", address: "New No 297, KEB Colony, 560048 Bangalore, India", destination: "Bengaluru, Karnataka", h2Only: true, expectedCity: "Bangalore" },
+    { id: "semantic-wrapper-state-conflict", title: "Observed Hotel", address: "Road, 799120 Udaipur, Tripura, India", destination: "Udaipur, Rajasthan", semanticMarkup: true, error: /Udaipur, Tripura, not the requested Udaipur, Rajasthan/ },
+    { id: "changed-address-markup", title: "Observed Hotel", address: "New No 297, KEB Colony, 560048 Bangalore, India", destination: "Bengaluru, Karnataka", changedMarkup: true, expectedCity: "Bangalore" },
+    { id: "button-address-markup", title: "Observed Hotel", address: "New No 297, KEB Colony, 560048 Bangalore, India", destination: "Bengaluru, Karnataka", changedMarkup: true, buttonMarkup: true, expectedCity: "Bangalore" },
+    { id: "changed-markup-wrong-city", title: "Observed Hotel", address: "Road, 799120 Udaipur, Tripura, India", destination: "Bengaluru, Karnataka", changedMarkup: true, error: /Udaipur, Tripura, not the requested Bengaluru/ },
+    { id: "invented-address-quote", title: "Observed Hotel", address: "Road, 799120 Udaipur, Tripura, India", destination: "Bengaluru, Karnataka", changedMarkup: true, quotedAddress: "New No 297, KEB Colony, 560048 Bangalore, India", error: /ungrounded property address quotation/ },
+    { id: "hidden-address-mirror", title: "Observed Hotel", address: "No street address is shown here", destination: "Bengaluru, Karnataka", changedMarkup: true, hiddenAddress: "New No 297, KEB Colony, 560048 Bangalore, India", quotedAddress: "", error: /does not confirm the requested physical location/ },
+  ]) {
+    const href = `https://www.booking.com/hotel/in/${fixture.id}.html`;
+    await page.route(href, (route) => route.fulfill({ contentType: "text/html; charset=utf-8", body: `<title>${fixture.h2Only ? 'Property details' : fixture.title + ', ' + fixture.destination + ' (updated 2026 prices)'}</title><${fixture.h2Only ? 'h2' : 'h1'}>${fixture.heading || fixture.title}</${fixture.h2Only ? 'h2' : 'h1'}>
+      ${fixture.semanticMarkup ? `<div data-testid="PropertyAddressDesktop-wrapper"><span>${fixture.address}</span><a href="#">Show on map</a></div>` : fixture.buttonMarkup ? `<button>${fixture.address}</button>` : `<p class="${fixture.changedMarkup ? "new-property-location" : "hp_address_subtitle"}" ${fixture.contentsMarkup ? 'style="display:contents"' : ''}>${fixture.address}</p>`}
+      ${fixture.hiddenAddress ? `<p class="hp_address_subtitle" style="opacity:0">${fixture.hiddenAddress}</p><div class="hp_address_subtitle"><span style="opacity:0">${fixture.hiddenAddress}</span></div><div><span style="opacity:0">${fixture.hiddenAddress}</span></div><div class="guest-review">${fixture.hiddenAddress}</div><footer>${fixture.hiddenAddress}</footer>` : ""}
+      <select id="hprt_nos_select_guard"><option value="0" selected>0</option><option value="1">1</option></select>` }));
+    const listHref = `https://www.booking.com/${fixture.id}-list`;
+    await page.route(listHref, (route) => route.fulfill({ contentType: "text/html; charset=utf-8", body: `<article data-testid="property-card"><span data-testid="title">${fixture.title}</span><a data-testid="title-link" href="${href}">${fixture.title}</a></article>` }));
+    await page.goto(listHref);
+    const originalAddressReader = tools.propertyAddressReader;
+    let addressReads = 0;
+    tools.propertyAddressReader = async ({ visibleHeader }, options) => {
+      addressReads += 1;
+      assert.ok(fixture.changedMarkup, "Existing visible address markup must not incur an extra model request");
+      assert.ok(visibleHeader.length <= 5_000, "Address input must remain below the free-plan text budget");
+      assert.equal(options.signal, tools.signal);
+      assert.equal(typeof options.onQuotaWait, "function");
+      if (fixture.hiddenAddress) assert.ok(!visibleHeader.includes(fixture.hiddenAddress), "Hidden mirrors, reviews and footer addresses cannot become physical-location evidence");
+      return fixture.quotedAddress ?? fixture.address;
+    };
+    try {
+      const opened = tools.openCandidate({ index: 0, title: fixture.title, href }, { destination: fixture.destination });
+      if (fixture.error) await assert.rejects(opened, fixture.error);
+      else assert.deepEqual((await opened).locationEvidence, { status: "confirmed", city: fixture.expectedCity, address: fixture.address, hotel: fixture.title });
+      assert.equal(addressReads, fixture.changedMarkup ? 1 : 0, "Each changed property header gets at most one grounded address read");
+    } finally { tools.propertyAddressReader = originalAddressReader; }
+    assert.equal(await page.locator("#hprt_nos_select_guard").inputValue(), "0", "Opening a property must not select a room before identity and physical location verification");
+  }
+
   await page.setContent(`<label><input type="checkbox" aria-label="Free cancellation">Free cancellation</label><div aria-hidden="true" style="position:fixed;inset:0;z-index:10"></div>`);
   assert.equal(await tools.applyCheckbox(/free cancellation/i), true);
   assert.equal(await page.getByRole("checkbox").isChecked(), true, "An overlay must not turn an optional filter into a failed hotel search");
@@ -219,7 +393,7 @@ try {
   });
   assert.equal(await page.locator(".event").count(), 1, "Replayed events must not duplicate the timeline");
 
-  console.log("Browser regressions passed: autocomplete recovery, exact hotel/location, delayed results, covered controls, multi-room availability/taxes, changed prices, fast missing-label extraction, double-click prevention, SSE deduplication.");
+  console.log("Browser regressions passed: autocomplete recovery, exact hotel/location, named-hotel city fallback, primary-city aliases, physical-address conflict rejection, delayed results, visible 502 retry verification, persistent/mismatched retry rejection, fresh pre-submit fields, covered controls, multi-room availability/taxes, changed prices, fast missing-label extraction, double-click prevention, SSE deduplication.");
 } finally {
   await browser.close();
 }

@@ -31,7 +31,9 @@ export function createShareGateway({ upstream, publicOrigin, username, password 
       upstreamResponse.on("error", () => response.destroy());
       upstreamResponse.pipe(response);
     });
-    proxy.setTimeout(20_000, () => proxy.destroy(new Error("Upstream timeout")));
+    const isIntake = request.method === "POST" && request.url.split("?", 1)[0] === "/api/intake";
+    // Intake includes free-plan pacing inside a 90s model deadline; other requests should fail quickly.
+    proxy.setTimeout(isIntake ? 100_000 : 20_000, () => proxy.destroy(new Error("Upstream timeout")));
     proxy.on("error", () => { if (!response.headersSent) deny(response, 502, "The agent service is unavailable."); else response.destroy(); });
     request.on("aborted", () => proxy.destroy());
     response.on("close", () => proxy.destroy());

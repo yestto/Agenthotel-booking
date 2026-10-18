@@ -9,6 +9,11 @@ let forwarded = 0;
 const upstream = http.createServer((request, response) => {
   forwarded++;
   if (request.url === "/events") { response.writeHead(200, { "content-type": "text/event-stream" }); response.write('data: {"message":"Live fixture event"}\n\n'); return; }
+  if (request.url === "/api/intake?slow=1") {
+    const timer = setTimeout(() => response.end(JSON.stringify({ ready: true, delayedFixture: true })), 21_000);
+    response.on("close", () => clearTimeout(timer));
+    return;
+  }
   response.end(JSON.stringify({ host: request.headers.host, origin: request.headers.origin || null, authorization: request.headers.authorization || null, path: request.url }));
 });
 await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
@@ -42,7 +47,10 @@ try {
   const event = await send({ authorization: auth }, "/events", "GET", true);
   assert.equal(event.status, 200);
   assert.match(event.body, /Live fixture event/);
-  console.log("Recruiter gateway checks passed: password, exact Host/Origin, HTTPS, credential stripping, loopback-only upstream and unbuffered events.");
+  const slowIntake = await send({ authorization: auth, origin: publicOrigin }, "/api/intake?slow=1", "POST");
+  assert.equal(slowIntake.status, 200, "A valid paced intake must not be cut off by the old 20-second proxy timeout");
+  assert.deepEqual(JSON.parse(slowIntake.body), { ready: true, delayedFixture: true });
+  console.log("Recruiter gateway checks passed: password, exact Host/Origin, HTTPS, credential stripping, loopback-only upstream, unbuffered events and paced intake beyond 20 seconds.");
 } finally {
   gateway.closeAllConnections(); upstream.closeAllConnections();
   await Promise.all([new Promise(resolve => gateway.close(resolve)), new Promise(resolve => upstream.close(resolve))]);

@@ -104,6 +104,104 @@ await assert.rejects(
 
 const baseIntent = { destination: "Pune", hotelName: "", supplier: "booking.com", checkIn: "2026-11-11", checkOut: "2026-11-12", adults: 1, rooms: 1, budgetMinInr: 0, budgetInr: 5000, breakfast: false, freeCancellation: false, bedPreference: "none", corrections: [], adultsEvidence: "1 adult", roomsEvidence: "1 room", clarification: "" };
 const mockIntent = (intent) => async () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(intent) }] } }] }));
+for (const [counts, model] of [
+  ["2 adults and 1 room", { adults: 1, rooms: 2, adultsEvidence: "2 adults", roomsEvidence: "1 room" }],
+  ["two adults and one room", { adults: 1, rooms: 2, adultsEvidence: "two adults", roomsEvidence: "one room" }],
+  ["2 adults and 1 room", { adults: 0, rooms: 0, adultsEvidence: "", roomsEvidence: "", clarificationField: "rooms", clarification: "How many rooms?" }],
+]) {
+  const goal = await parseTravelRequestHybrid(`Hotel in Pune on 11 November 2026 for ${counts} under 5000`, {
+    apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, ...model }),
+  });
+  assert.equal(goal.adults, 2, "Grounded evidence must not permit changing a clearly stated adult count");
+  assert.equal(goal.rooms, 1, "Source counts remain authoritative even when model quotes are omitted");
+}
+for (const [policy, flags, model] of [
+  ["with breakfast and free cancellation", [true, true], { breakfast: false, freeCancellation: false }],
+  ["breakfast included with free cancellation", [true, true], { breakfast: false, freeCancellation: false }],
+  ["without breakfast and no free cancellation", [false, false], { breakfast: true, freeCancellation: true }],
+  ["no breakfast and no cancellation", [false, false], { breakfast: true, freeCancellation: true }],
+  ["I don't need breakfast; free cancellation not required", [false, false], { breakfast: true, freeCancellation: true }],
+  ["not with breakfast and not free cancellation", [false, false], { breakfast: true, freeCancellation: true }],
+]) {
+  const goal = await parseTravelRequestHybrid(`Hotel in Pune on 11 November 2026 for 1 adult 1 room under 5000 ${policy}`, {
+    apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, ...model }),
+  });
+  assert.deepEqual([goal.breakfast, goal.freeCancellation], flags, "Explicit positive and negative policies must survive model mistakes");
+}
+for (const [details, expected] of [
+  ["for 2 adults or 3 adults and 1 room", /number of adults/],
+  ["for 1 adult 1 room with breakfast but without breakfast", /breakfast.*both yes and no/],
+  ["for 1 adult 1 room with free cancellation but no free cancellation", /free cancellation.*both yes and no/],
+]) {
+  await assert.rejects(parseTravelRequestHybrid(`Hotel in Pune on 11 November 2026 ${details} under 5000`, {
+    apiKey: "test-key", now, fetchImpl: () => assert.fail("Contradictory explicit constraints must clarify before an LLM call"),
+  }), expected);
+}
+const additive = await parseTravelRequestHybrid("Hotel in Pune on 11 November 2026 for a couple plus a friend and 1 room under 5000", {
+  apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, adults: 3, adultsEvidence: "a couple plus a friend" }),
+});
+assert.equal(additive.adults, 3, "Couple inference must not erase an additional guest");
+const numericAdditive = await parseTravelRequestHybrid("Hotel in Pune on 11 November 2026 for 2 adults plus a friend and 1 room under 5000", {
+  apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, adults: 3, adultsEvidence: "2 adults plus a friend" }),
+});
+assert.equal(numericAdditive.adults, 3, "A partial numeric count must not erase an explicit additional guest");
+const numericWithExtraPolicy = await parseTravelRequestHybrid("Hotel in Pune on 11 November 2026 for 2 adults and 1 room under 5000 with extra breakfast", {
+  apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, adultsEvidence: "2 adults" }),
+});
+assert.equal(numericWithExtraPolicy.adults, 2, "Unrelated extra amenities must not disable explicit occupancy validation");
+await assert.rejects(parseTravelRequestHybrid('Find hotel named "Ambara Kovilakam Private Pool Villa By Travent Mug" in Ramanagara on 11 November 2026 for 1 adult 1 room under 5000', {
+  apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, destination: "Ramanagara", hotelName: "Ambara Kovilakam Private Pool Villa" }),
+}), /full quoted hotel name/, "A clear quoted identity must not lose its operator suffix");
+await assert.rejects(parseTravelRequestHybrid('Find hotel named "The Vaishali Residency" in Vaishali on 11 November 2026 for 1 adult 1 room under 5000', {
+  apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, destination: "Vaishali", hotelName: "The Vaishali Residency Mumbai" }),
+}), /full quoted hotel name/, "A clear quoted identity must not acquire an invented branch");
+const quotedCounts = await parseTravelRequestHybrid('Find hotel named "The Two Rooms Resort" in Pune on 11 November 2026 for 1 adult 1 room under 5000', {
+  apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, hotelName: "The Two Rooms Resort" }),
+});
+assert.equal(quotedCounts.rooms, 1, "Numeric words inside a quoted property name are not occupancy constraints");
+const quotedNoise = await parseTravelRequestHybrid('Find hotel called "Akshaya hotel hotel" in Pune on 11 November 2026 for 1 adult 1 room under 5000', {
+  apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, hotelName: "Akshaya Hotel" }),
+});
+assert.equal(quotedNoise.hotelName, "Akshaya Hotel", "Case and repeated hotel filler may still normalize without changing identity");
+const groqIntent = (intent) => async (url, request) => {
+  assert.equal(url, "https://api.groq.com/openai/v1/chat/completions");
+  assert.equal(request.headers["x-goog-api-key"], undefined);
+  const body = JSON.parse(request.body);
+  assert.equal(body.response_format.json_schema.strict, true);
+  assert.equal(body.response_format.json_schema.schema.properties.destination.type, "string");
+  return Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify(intent) } }] });
+};
+const groqGoal = await parseTravelRequestHybrid("pune hotel pls november 11 2026 1 adult 1 room budget 2000-6000", {
+  provider: "groq", apiKey: "fixture", now, fetchImpl: groqIntent({ ...baseIntent, budgetMinInr: 2000, budgetInr: 6000 }),
+});
+assert.equal(groqGoal.intakeSource, "groq");
+assert.equal(groqGoal.budgetMinInr, 2000);
+assert.equal(groqGoal.budgetInr, 6000);
+for (const [hotelName, destination] of [
+  ["Ambara Kovilakam Private Pool Villa By Travent Mug", "Ramanagara, Karnataka"],
+  ["Holiday Inn Express Bengaluru Yeshwantpur by IHG", "Bengaluru, Karnataka"],
+]) {
+  const query = `Find ${hotelName} in ${destination} from 15 to 17 December 2026 for 2 adults and 1 room under INR 1000 total`;
+  const property = await parseTravelRequestHybrid(query, {
+    provider: "groq", apiKey: "fixture", now,
+    fetchImpl: async (url, request) => {
+      const body = JSON.parse(request.body);
+      assert.equal(body.messages[1].content, query);
+      assert.match(body.messages[0].content, /Preserve the complete explicitly requested property name/);
+      assert.match(body.messages[0].content, /operator or brand affiliations/);
+      assert.match(body.messages[0].content, /Branch\/locality words that are part of the named property stay in hotelName/);
+      assert.match(body.messages[0].content, /do not delete identifying words/);
+      return groqIntent({ ...baseIntent, hotelName, destination, checkIn: "2026-12-15", checkOut: "2026-12-17", adults: 2,
+        adultsEvidence: "2 adults", budgetInr: 1000 })(url, request);
+    },
+  });
+  assert.equal(property.hotelName, hotelName, "Intake must preserve the property's operator and branch identity");
+  assert.equal(property.destination, destination, "A separate location must not be absorbed into the hotel name");
+  assert.ok(property.interpretedRequest.includes(`hotel named "${hotelName}"`));
+}
+await assert.rejects(parseTravelRequestHybrid("Hotel in Pune on 11 November 2026 for 1 adult under 5000", {
+  provider: "groq", apiKey: "fixture", now, fetchImpl: groqIntent({ ...baseIntent, rooms: 0, roomsEvidence: "" }),
+}), /number of rooms/, "Groq must not invent omitted occupancy");
 let intakeRetryCalls = 0;
 assert.equal((await parseTravelRequestHybrid("Hotel in Pune on 11 November 2026 for 1 adult 1 room under 5000", {
   apiKey: "test-key", now, fetchImpl: async (...args) => ++intakeRetryCalls === 1 ? new Response('{}', { status: 503 }) : mockIntent(baseIntent)(...args),
@@ -112,7 +210,7 @@ assert.equal(intakeRetryCalls, 2);
 intakeRetryCalls = 0;
 await assert.rejects(parseTravelRequestHybrid("Hotel in Pune on 11 November 2026 for 1 adult 1 room under 5000", {
   apiKey: "test-key", now, fetchImpl: async () => { intakeRetryCalls++; return new Response('{}', { status: 429 }); },
-}), /Provider HTTP 429/);
+}), /Provider HTTP 429.*quota or rate limit reached.*reset/);
 assert.equal(intakeRetryCalls, 1, "Quota errors must not trigger model retries");
 await assert.rejects(parseTravelRequestHybrid("Hotel in Pune on 11 November 2026 under 5000", {
   apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, adults: 0, rooms: 0, adultsEvidence: "", roomsEvidence: "", clarificationField: "budget", clarification: "Is this per night or total?" }),
@@ -137,7 +235,7 @@ const explicitRooms = await parseTravelRequestHybrid("Hotel in Pune on 11 Novemb
 assert.equal(explicitRooms.rooms, 2, "An already explicit, grounded room count must not generate a redundant clarification");
 await assert.rejects(parseTravelRequestHybrid("Hotel in Pune on 11 November 2026 for 2 adults one room or two rooms under 5000", {
   apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, adults: 2, adultsEvidence: "2 adults", roomsEvidence: "one room", clarificationField: "rooms", clarification: "Do you need one room or two rooms?" }),
-}), /one room or two rooms/, "Conflicting source counts must keep their clarification");
+}), /number of rooms/, "Conflicting source counts must keep their clarification");
 assert.equal(budgetGuard.budgetInr, 5000, "The model must not enlarge a clearly stated budget");
 await assert.rejects(parseTravelRequestHybrid("Hotel in Pune on 11 November 2026 for 1 adult 1 room under 5000", { apiKey: "test-key", now, fetchImpl: mockIntent({ ...baseIntent, checkIn: "2026-11-12", checkOut: "2026-11-13" }) }), /changed the stated dates/);
 for (const [query, expected] of [

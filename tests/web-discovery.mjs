@@ -57,6 +57,8 @@ assert.equal((await discoverHotel({ supplier: "booking.com" }, { fetchImpl: () =
 assert.equal((await discoverHotel(goal, { apiKey: "fixture-key", fetchImpl: async () => Response.json({ candidates: [{ content: { parts: [{ text: quote }] } }] }),
   matchDecider: () => assert.fail("Uncited text must not be assessed as web evidence") })).status, "unconfirmed");
 await assert.rejects(discoverHotel(goal, { apiKey: "fixture-key", fetchImpl: async () => new Response("quota", { status: 429 }) }), /Provider HTTP 429/);
+await assert.rejects(discoverHotel(goal, { apiKey: "gsk_PrivateFixture" }), /separate search credential/, "The core provider key must never be sent to Google search");
+await assert.rejects(discoverHotel(goal, { apiKey: "gsk_PrivateFixture", fetchImpl: () => assert.fail("Wrapped fetch must not dispatch a foreign provider key") }), /separate search credential/);
 const controller = new AbortController(); controller.abort();
 await assert.rejects(discoverHotel(goal, { signal: controller.signal, apiKey: "fixture-key", fetchImpl: () => assert.fail("Already cancelled") }), { name: "AbortError" });
 await assert.rejects(discoverHotel(goal, { apiKey: "fixture-key", timeoutMs: 5, fetchImpl: (_url, { signal }) => new Promise((_resolve, reject) => {

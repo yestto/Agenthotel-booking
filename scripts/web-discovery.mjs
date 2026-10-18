@@ -1,5 +1,6 @@
 import { normalizeSupplierHost } from "./computer-agent.mjs";
 import { decideDiscoveryMatch, DiscoveryMatch } from "./workflow-agent.mjs";
+import { resolveModelConfig } from "./model-provider.mjs";
 
 export function needsWebDiscovery(goal) {
   return Boolean(goal.hotelName || goal.supplier !== "booking.com");
@@ -44,12 +45,16 @@ export function validateDiscoveryMatch(decision, evidence) {
 }
 
 export async function discoverHotel(goal, {
-  apiKey = process.env.GEMINI_API_KEY, model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite",
+  apiKey = process.env.GEMINI_API_KEY, model = process.env.GEMINI_DISCOVERY_MODEL
+    || (resolveModelConfig().provider === "gemini" ? process.env.GEMINI_MODEL : "") || "gemini-3.5-flash-lite",
   fetchImpl = fetch, signal, timeoutMs = 20_000, matchDecider = decideDiscoveryMatch,
 } = {}) {
   signal?.throwIfAborted();
   if (!needsWebDiscovery(goal)) return { status: "skipped", summary: "General hotel selection uses live supplier inventory; no identity lookup was needed.", sources: [], claims: [] };
   if (!apiKey) throw new Error("Web discovery is unavailable: configure the AI service to enable source-linked search.");
+  if (/^(?:gsk_|xai-)/.test(apiKey) || (fetchImpl === globalThis.fetch && !/^AIza[A-Za-z0-9_-]+$/.test(apiKey))) {
+    throw new Error("Web discovery is unavailable: it needs a separate search credential. The core AI key was not sent to the search provider.");
+  }
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener("abort", abort, { once: true });
@@ -73,7 +78,7 @@ export async function discoverHotel(goal, {
     }
     const decision = validateDiscoveryMatch(await matchDecider({ identity,
       claims: evidence.claims, sources: evidence.sources.map(({ id, title, url }) => ({ id, title, host: new URL(url).hostname })),
-    }, { apiKey, model, fetchImpl, signal: controller.signal }), evidence);
+    }, { provider: "gemini", apiKey, model, fetchImpl, signal: controller.signal }), evidence);
     const claims = evidence.claims.filter(claim => decision.claimIds.includes(claim.id));
     const sources = evidence.sources.filter(source => claims.some(claim => claim.sourceIds.includes(source.id)));
     return { status: decision.status, summary: decision.summary, sources, claims, queries: evidence.queries, searchSuggestions: evidence.searchSuggestions };

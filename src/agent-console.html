@@ -63,6 +63,7 @@
     .agent.done { border-color:#a7d8c4; background:#edf9f4; }
     .agent.done .dot { background:var(--green); }
     .timeline-list { max-height:340px; overflow:auto; display:grid; gap:8px; padding-right:5px; }
+    .timeline .clarification { margin:0 0 12px; }
     .event { display:grid; grid-template-columns:90px 1fr auto; gap:12px; padding:11px 12px; border-left:3px solid #cad1cc; background:#faf9f5; border-radius:0 10px 10px 0; }
     .event b { font-size:11px; color:var(--green); }
     .event span { font-size:12px; }
@@ -99,7 +100,7 @@
         <h2>Where should the agents take you?</h2>
         <p>Write naturally—even with poor grammar or spelling. AI corrects and structures the destination, dates, guests, budget or budget range, hotel, and preferred booking website before the browser agents start.</p>
         <label for="query" class="sub">Hotel request</label>
-        <textarea id="query">Find a hotel in Bengaluru, 15–17 December 2026, for 2 adults and 1 room, under ₹50,000 total, with breakfast.</textarea>
+        <textarea id="query">Find a hotel in Mumbai for 1 adult and 1 room, from 20 to 21 December 2026, under ₹15,000 total.</textarea>
         <div class="clarification" id="clarification" role="status" hidden></div>
         <div class="route" id="route" role="status" hidden></div>
         <div class="examples">
@@ -135,6 +136,7 @@
 
         <section class="card timeline">
           <div class="section-head"><div><div class="eyebrow">Live agent progress</div><h2>Agent activity</h2></div><span class="sub" id="runId">No run</span></div>
+          <div class="clarification" id="allowanceWait" role="status" hidden>Waiting for the free-plan allowance. <span id="allowanceCountdown" aria-live="off"></span> You can cancel this run while waiting.</div>
           <div class="timeline-list" id="timeline"><div class="empty">Start a request to watch real agent events arrive from the local orchestrator.</div></div>
         </section>
 
@@ -167,7 +169,7 @@
     <footer>Availability and prices are read from the supplier’s visible booking flow and verified before handoff.</footer>
   </div>
   <script>
-    const els = Object.fromEntries(["runtime","offline","clarification","route","plan","discovery","discoverySummary","discoveryClaims","searchSuggestions","query","start","stop","status","runId","timeline","receipt","provider","providerMode","hotel","rating","availability","total","proof"].map(id => [id, document.getElementById(id)]));
+    const els = Object.fromEntries(["runtime","offline","clarification","route","plan","discovery","discoverySummary","discoveryClaims","searchSuggestions","query","start","stop","status","runId","allowanceWait","allowanceCountdown","timeline","receipt","provider","providerMode","hotel","rating","availability","total","proof"].map(id => [id, document.getElementById(id)]));
     let runId = null;
     let source = null;
     let runStatus = "idle";
@@ -176,6 +178,8 @@
     let apiBase = "";
     let lastEventSequence = 0;
     let starting = false;
+    let pendingIntake = null;
+    let allowanceTimer = null;
 
     const setStatus = (text, tone = "") => { els.status.textContent = text; els.status.className = `status ${tone}`.trim(); };
     const endpoint = path => `${apiBase}${path}`;
@@ -189,6 +193,32 @@
     };
     const money = value => new Intl.NumberFormat("en-IN", { style:"currency", currency:"INR", maximumFractionDigits:0 }).format(value);
 
+    function clearAllowanceWait() {
+      clearInterval(allowanceTimer);
+      allowanceTimer = null;
+      els.allowanceWait.hidden = true;
+      els.allowanceCountdown.textContent = "";
+    }
+
+    function showAllowanceWait(event) {
+      if (!runId || runStatus === "awaiting_human") return;
+      const waitMs = Number(event.evidence?.waitMs);
+      if (!Number.isFinite(waitMs) || waitMs <= 0) return;
+      clearAllowanceWait();
+      // Replayed events keep their original deadline instead of restarting the countdown.
+      const at = Date.parse(event.at);
+      const until = (Number.isFinite(at) ? Math.min(at, Date.now()) : Date.now()) + Math.min(waitMs, 90_000);
+      const update = () => {
+        const seconds = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+        els.allowanceCountdown.textContent = seconds > 0 ? `Next decision in about ${seconds}s.` : "Allowance check is due; waiting for the service to respond.";
+        if (!seconds) { clearInterval(allowanceTimer); allowanceTimer = null; }
+      };
+      els.allowanceWait.hidden = false;
+      setStatus("Waiting for allowance", "active");
+      update();
+      if (until > Date.now()) allowanceTimer = setInterval(update, 1000);
+    }
+
     async function probeRuntime(base, timeoutMs = 1800) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -199,7 +229,7 @@
         apiBase = base;
         browserReady = data.browserReady !== false;
         if (data.browserActionMode === "unavailable") browserReady = false;
-        setRuntime(true, `${data.agents.length} workflow roles · ${data.intakeMode === "llm-assisted" ? "AI language ready" : "Local language fallback"} · ${data.workflowActionMode === "supervised-agentic" ? "AI planning ready" : "Workflow update required"}`);
+        setRuntime(true, `${data.agents.length} workflow roles · ${data.intakeMode === "llm-assisted" ? "AI language ready" : data.intakeMode === "unavailable" ? "AI language unavailable" : "Local language fallback"} · ${data.workflowActionMode === "supervised-agentic" ? "AI planning ready" : "Workflow update required"}`);
         if (data.activeRunId) attachRun(data.activeRunId, data.activeRunStatus);
         if (data.browserReady === false && !data.activeRunId) {
           els.start.disabled = true;
@@ -232,11 +262,13 @@
     }
 
     function resetAgentCards() {
+      clearAllowanceWait();
       document.querySelectorAll(".agent").forEach(card => card.className = "agent");
     }
 
     function attachRun(id, status = "running") {
       if (!id || runId === id) return;
+      cancelPendingIntake();
       source?.close();
       runId = id;
       lastEventSequence = 0;
@@ -275,8 +307,11 @@
         els.plan.hidden = false;
       }
       if (event.type === "discovery.completed") showDiscovery(event.evidence);
+      if (event.type === "model.quota_wait") showAllowanceWait(event);
+      if (event.type === "model.quota_resumed") { clearAllowanceWait(); if (runId && runStatus !== "awaiting_human") setStatus("Running", "active"); }
 
       if (event.type === "boundary.reached") {
+        clearAllowanceWait();
         runStatus = "awaiting_human";
         setStatus("Safe boundary", "safe");
         els.stop.textContent = "Close supplier browser";
@@ -322,6 +357,7 @@
     }
 
     function finish(type, message = "") {
+      clearAllowanceWait();
       source?.close(); source = null;
       if (type === "run.failed") {
         const unavailable = /not available|no verified available room|no observed hotel/i.test(message);
@@ -344,6 +380,7 @@
       if (starting || runId) return;
       starting = true;
       els.start.disabled = true;
+      let intakeRequest = null;
       try {
       const query = els.query.value.trim();
       if (query.length < 20) { setStatus("Add more detail", "failed"); return; }
@@ -355,10 +392,22 @@
         setStatus("Start agent service", "failed");
         return;
       }
-      if (!browserReady) return;
+      if (!browserReady || runId) return;
       setStatus("Understanding request", "active");
-      const intakeResponse = await fetch(endpoint("/api/intake"), { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ query }) });
+      intakeRequest = { controller:new AbortController(), timer:null, timedOut:false, cancelled:false };
+      pendingIntake = intakeRequest;
+      els.stop.disabled = false;
+      els.stop.textContent = "Cancel interpretation";
+      els.clarification.textContent = "AI interpretation may wait for its allowance. You can cancel before the browser starts.";
+      els.clarification.hidden = false;
+      intakeRequest.timer = setTimeout(() => { intakeRequest.timedOut = true; intakeRequest.controller.abort(); }, 95_000);
+      const intakeResponse = await fetch(endpoint("/api/intake"), { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ query }), signal:intakeRequest.controller.signal });
+      intakeRequest.controller.signal.throwIfAborted();
       const intake = await intakeResponse.json();
+      intakeRequest.controller.signal.throwIfAborted();
+      clearTimeout(intakeRequest.timer);
+      if (pendingIntake === intakeRequest) pendingIntake = null;
+      if (runId) return;
       if (!intakeResponse.ok || !intake.ready) {
         els.clarification.textContent = `Before I search: ${intake.message || "Please add the missing trip details."}`;
         els.clarification.hidden = false;
@@ -372,7 +421,7 @@
         ? ` · Requested hotel: ${intake.goal.hotelName} · Selection: Exact hotel; rating does not affect the choice`
         : " · Selection: Highest-rated available hotel within total budget";
       const corrections = intake.goal.corrections?.length ? ` · Corrected: ${intake.goal.corrections.join(", ")}` : "";
-      els.route.textContent = `${intake.goal.intakeSource === "gemini" ? "AI interpreted" : "Validated"}: ${interpretation}${hotel}${corrections} · Provider: ${intake.goal.supplier} · ${intake.goal.supplierMode === "verified-adapter" ? "verified adapter" : "universal computer-use route"}`;
+      els.route.textContent = `${["gemini", "groq"].includes(intake.goal.intakeSource) ? "AI interpreted" : "Validated"}: ${interpretation}${hotel}${corrections} · Provider: ${intake.goal.supplier} · ${intake.goal.supplierMode === "verified-adapter" ? "verified adapter" : "universal computer-use route"}`;
       els.route.hidden = false;
       source?.close();
       resetAgentCards();
@@ -405,13 +454,45 @@
       source = new EventSource(endpoint(`/api/runs/${encodeURIComponent(runId)}/events`));
       source.onmessage = message => addEvent(JSON.parse(message.data));
       source.onerror = () => { if (runId && runStatus !== "awaiting_human") setStatus("Reconnecting", "active"); };
+      } catch (error) {
+        if (!intakeRequest?.controller.signal.aborted) throw error;
+        if (intakeRequest.timedOut && !intakeRequest.cancelled && !runId) {
+          setStatus("Interpretation timed out", "failed");
+          els.clarification.textContent = "AI interpretation took too long. Please try again; no browser run was started.";
+          els.clarification.hidden = false;
+        }
       } finally {
-        starting = false;
-        els.start.disabled = Boolean(runId) || (runtimeReady && !browserReady);
+        clearTimeout(intakeRequest?.timer);
+        if (pendingIntake === intakeRequest) pendingIntake = null;
+        if (!intakeRequest?.cancelled) {
+          starting = false;
+          els.start.disabled = Boolean(runId) || (runtimeReady && !browserReady);
+          if (!runId) { els.stop.disabled = true; els.stop.textContent = "Cancel run"; }
+        }
       }
     }
 
+    function cancelPendingIntake() {
+      if (!pendingIntake) return;
+      const pending = pendingIntake;
+      pending.cancelled = true;
+      clearTimeout(pending.timer);
+      pending.controller.abort();
+      pendingIntake = null;
+      starting = false;
+    }
+
     async function stopRun() {
+      if (pendingIntake) {
+        cancelPendingIntake();
+        setStatus("Cancelled");
+        els.clarification.textContent = "Interpretation cancelled. No browser run was started.";
+        els.clarification.hidden = false;
+        els.start.disabled = runtimeReady && !browserReady;
+        els.stop.disabled = true;
+        els.stop.textContent = "Cancel run";
+        return;
+      }
       if (!runId) return;
       const action = runStatus === "awaiting_human" ? "close" : "cancel";
       els.stop.disabled = true;

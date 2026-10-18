@@ -12,7 +12,8 @@ const cases = [
   { name: "Generic default search avoids unnecessary web requests", identity: { destination: "Udaipur, Rajasthan", supplier: "booking.com" }, expected: ["skipped"] },
 ];
 const results = [];
-let blockedBy;
+let blockedBy = /^AIza[A-Za-z0-9_-]+$/.test(process.env.GEMINI_API_KEY || "")
+  ? undefined : "Google discovery is unavailable without a separate Google credential; no provider requests were sent.";
 let requests = 0;
 for (const { name, identity, expected } of cases) {
   if (blockedBy && expected[0] !== "skipped") {

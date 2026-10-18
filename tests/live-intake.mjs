@@ -15,19 +15,27 @@ const cases = [
   { name: "Impossible calendar date", query: "Hotel in Pune on 31 November 2026 for 1 adult 1 room under 5000", clarification: /valid calendar/i },
   { name: "Per-night versus total budget", query: "Hotel in Pune on 11 November 2026 for 1 adult 1 room under 5000 per night", clarification: /total budget/i },
   { name: "Children must not silently disappear", query: "Hotel in Pune on 11 November 2026 for 2 adults 1 child 1 room under 5000", clarification: /Child occupancy/i },
+  { name: "Full named hotel operator and separate place", query: 'Find hotel named "Ambara Kovilakam Private Pool Villa By Travent Mug" in Ramanagara, Karnataka from 15 to 17 December 2026 for 2 adults and 1 room under INR 1000 total', expected: { destination: /Ramanagara/i, hotelName: "Ambara Kovilakam Private Pool Villa By Travent Mug", adults: 2, rooms: 1, budgetInr: 1000 } },
+  { name: "Spelled counts and required policies", query: "hotel in kochi january 14 to 16 2027 for two adults one room total budget 10000-25000 with breakfast and free cancellation", expected: { destination: /Kochi|Cochin/i, checkIn: "2027-01-14", checkOut: "2027-01-16", adults: 2, rooms: 1, budgetMinInr: 10000, budgetInr: 25000, breakfast: true, freeCancellation: true } },
+  { name: "Explicitly optional policies", query: "hotel in jaipur on 21 january 2027 for 1 adult 1 room total under 15000 without breakfast and no free cancellation", expected: { destination: /Jaipur/i, adults: 1, rooms: 1, breakfast: false, freeCancellation: false } },
+  { name: "Contradictory occupancy must clarify", query: "hotel in Chennai on 14 january 2027 for 2 adults or 3 adults and 1 room total under 15000", clarification: /number of adults/i },
+  { name: "Contradictory policy must clarify", query: "hotel in Chennai on 14 january 2027 for 1 adult 1 room total under 15000 with breakfast but without breakfast", clarification: /breakfast.*both yes and no/i },
 ];
+const filters = process.argv.slice(2).map(value => value.toLowerCase());
+const selectedCases = filters.length ? cases.filter(item => filters.some(value => item.name.toLowerCase().includes(value))) : cases;
+assert.ok(selectedCases.length, "No live intake scenarios match the supplied names");
 const reports = [];
-for (const item of cases) {
+for (const item of selectedCases) {
   const started = Date.now();
   try {
-    const response = await fetch(`${base}/api/intake`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: item.query }), signal: AbortSignal.timeout(20000) });
+    const response = await fetch(`${base}/api/intake`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: item.query }), signal: AbortSignal.timeout(95000) });
     const result = await response.json();
     if (item.clarification) {
       assert.equal(response.status, 422);
       assert.match(result.message, item.clarification);
     } else {
       assert.equal(response.status, 200, result.message);
-      assert.equal(result.goal.intakeSource, "gemini");
+      assert.ok(["gemini", "groq"].includes(result.goal.intakeSource), "Live classification must come from a supported AI provider, not the local parser");
       for (const [key, value] of Object.entries(item.expected)) {
         if (value instanceof RegExp) assert.match(result.goal[key], value, key);
         else assert.equal(result.goal[key], value, key);

@@ -7,7 +7,7 @@ const candidate = (title, rating, totalInr) => ({ index: 0, title, rating, total
 const room = (totalInr = 5000, extra = {}) => ({ index: 0, totalInr, occupancyConfirmed: true, breakfastIncluded: false, freeCancellation: false, rowText: "1 adult", ...extra });
 const reports = [];
 
-async function check(name, { trip = {}, candidates = [], rooms = {}, changedRoom, failure, expectedHotel, searchError, cancelOnRoom = false, expectedStatus = "completed", supervisorDecider, roomDecider, roomError, checkoutRoomChange }) {
+async function check(name, { trip = {}, candidates = [], rooms = {}, changedRoom, failure, expectedHotel, searchError, searchLanding = false, cancelOnRoom = false, expectedStatus = "completed", supervisorDecider, roomDecider, roomError, checkoutRoomChange, boundaryError, boundaryChange }) {
   const events = [];
   const calls = [];
   const decisions = [];
@@ -28,6 +28,7 @@ async function check(name, { trip = {}, candidates = [], rooms = {}, changedRoom
   let roomObservations = 0;
   let searchCalls = 0;
   orchestrator.tools = {
+    ...(searchLanding ? { page: { url: () => searchCalls === 1 ? 'https://www.booking.com/city/in/pune.html' : 'https://www.booking.com/searchresults.html' } } : {}),
     bindPolicy: (trip, policy) => { assert.equal(policy.maximumTotalInr, trip.budgetInr); calls.push("policy"); },
     startSession: async () => calls.push("session"),
     search: async () => { searchCalls++; const error = typeof searchError === "function" ? searchError(searchCalls) : searchError; if (error) throw new Error(error); return "https://www.booking.com/searchresults.html"; },
@@ -45,7 +46,7 @@ async function check(name, { trip = {}, candidates = [], rooms = {}, changedRoom
     verifySelectedRoom: async (item, trip) => (await orchestrator.tools.observeRooms(trip)).find((rate) => rate.index === item.index),
     returnToSearch: async () => calls.push("return"),
     continueToGuestDetails: async () => { calls.push("guest-details"); return "https://secure.booking.com/book.html?stage=guest-details"; },
-    verifyBoundary: async () => ({ boundary: "protected-checkout", visibleProtectedFields: 3 }),
+    verifyBoundary: async (receipt) => { if (boundaryError) throw new Error(boundaryError); return { ...receipt, boundary: "protected-checkout", visibleProtectedFields: 3, checkoutSummaryVerified: true, ...boundaryChange }; },
     close: async () => calls.push("close"),
   };
   if (failure) await assert.rejects(orchestrator.run("A complete hotel request for the graph scenario test"), failure);
@@ -59,7 +60,8 @@ async function check(name, { trip = {}, candidates = [], rooms = {}, changedRoom
   }
   assert.equal(orchestrator.status, expectedStatus);
   assert.ok(calls.includes("close"));
-  if (expectedStatus !== "completed") assert.ok(!calls.includes("guest-details"), "Rejected evidence must never reach checkout");
+  if (expectedStatus !== "completed" && !boundaryError && !boundaryChange) assert.ok(!calls.includes("guest-details"), "Rejected evidence must never reach checkout");
+  if (expectedStatus !== "completed") assert.ok(!events.some(({ type }) => type === "boundary.reached"), "Rejected checkout evidence must not emit successful boundary proof");
   reports.push({ scenario: name, passed: true });
   return { events, calls, decisions };
 }
@@ -133,6 +135,14 @@ await check("A specific named hotel does not require a guest rating", {
 });
 await check("No supplier results never produce fabricated inventory", { failure: /No observed hotel/, expectedStatus: "failed" });
 await check("Human verification is reported as needing human attention", { searchError: "The supplier requested human verification", failure: /human verification/, expectedStatus: "needs_human" });
+const exhaustedSupplier = await check("Exhausted supplier recovery preserves the error instead of requesting irrelevant human input", {
+  searchError: "Supplier UI unavailable: temporary 502 after one visible retry", failure: /temporary 502 after one visible retry/, expectedStatus: "failed",
+  supervisorDecider: async (observation) => {
+    if (observation.lastFailure) assert.ok(!observation.allowedActions.some(({ action }) => action === 'needs_human'));
+    return { ...(observation.allowedActions.find(({ action }) => action === 'search') || { action: 'stop', candidateId: '' }), summary: 'Use only the remaining bounded search or report the supplier error' };
+  },
+});
+assert.equal(exhaustedSupplier.events.filter(({ type }) => type === 'agent.started').filter(({ agent }) => agent === 'SearchAgent').length, 2);
 const cancelled = await check("Cancellation during room observation does not retry or checkout", { candidates: [candidate("Eligible", 8, 5000)], cancelOnRoom: true, expectedStatus: "cancelled" });
 assert.ok(!cancelled.calls.includes("return"));
 
@@ -141,6 +151,24 @@ const delegated = await check("Supervisor delegates search and room inspection b
 });
 assert.deepEqual(delegated.decisions, ["search", "inspect", "checkout"]);
 assert.ok(delegated.calls.includes("policy"));
+const reportedWaits = await check("Supervisor and room quota waits are visible without changing guarded decisions", {
+  candidates: [candidate('Eligible', 8, 5000)], rooms: { Eligible: [room()] }, expectedHotel: 'Eligible',
+  supervisorDecider: async (observation, options) => {
+    options.onQuotaWait({ phase: 'waiting', waitMs: 60000 });
+    options.onQuotaWait({ phase: 'resumed', waitedMs: 60000 });
+    const choice = ['checkout', 'inspect', 'search', 'stop'].map((action) => observation.allowedActions.find((item) => item.action === action)).find(Boolean);
+    return { ...choice, summary: 'Select from current guarded evidence after waiting' };
+  },
+  roomDecider: async (observation, options) => {
+    options.onQuotaWait({ phase: 'waiting', waitMs: 60000 });
+    options.onQuotaWait({ phase: 'resumed', waitedMs: 60000 });
+    return { ...observation.allowedActions.find(({ action }) => action === 'select'), summary: 'Choose a verified eligible rate after waiting' };
+  },
+});
+for (const agent of ['SupervisorAgent', 'RoomAgent']) {
+  assert.ok(reportedWaits.events.some((event) => event.agent === agent && event.type === 'model.quota_wait' && event.evidence.waitMs === 60000));
+  assert.ok(reportedWaits.events.some((event) => event.agent === agent && event.type === 'model.quota_resumed' && event.evidence.waitedMs === 60000));
+}
 await check("Supervisor cannot invent a hotel ID", { supervisorDecider: async () => ({ action: "inspect", candidateId: "hotel_99", summary: "Invented target" }), failure: /unapproved supervisor/, expectedStatus: "failed" });
 await check("Supervisor cannot bypass search and room verification", { supervisorDecider: async () => ({ action: "checkout", candidateId: "", summary: "Skip verification" }), failure: /premature/, expectedStatus: "failed" });
 await check("Supervisor hands genuine uncertainty to a human", { supervisorDecider: async () => ({ action: "needs_human", candidateId: "", summary: "Confirm the locality before navigating" }), failure: /Human input needed/, expectedStatus: "needs_human" });
@@ -165,6 +193,14 @@ await check("Price changes during supervisor review stop before checkout", {
   candidates: [candidate("Eligible", 8, 5000)], rooms: { Eligible: [room()] }, checkoutRoomChange: room(6000),
   failure: /changed before checkout/, expectedStatus: "failed",
 });
+await check("Changed hotel at checkout never becomes a successful receipt", {
+  candidates: [candidate("Eligible", 8, 5000)], rooms: { Eligible: [room()] }, boundaryChange: { hotel: "Other Hotel" },
+  failure: /checkout reservation summary was not verified/, expectedStatus: "failed",
+});
+await check("Guest form without full reservation total never becomes a successful receipt", {
+  candidates: [candidate("Eligible", 8, 5000)], rooms: { Eligible: [room()] }, boundaryError: "Checkout does not show a verifiable full stay total. No booking was submitted.",
+  failure: /verifiable full stay total/, expectedStatus: "failed",
+});
 await check("Model supervisor failure never falls back to scripted routing", { supervisorDecider: async () => { throw new Error("AI workflow supervisor decision is unavailable"); }, failure: /unavailable/, expectedStatus: "failed" });
 await check("Repeated room observations are bounded", {
   candidates: [candidate("Eligible", 8, 5000)], rooms: { Eligible: [room()] },
@@ -176,6 +212,13 @@ const searchedAgain = await check("Supervisor recovers search through the same i
 });
 assert.deepEqual(searchedAgain.decisions, ["search", "search", "inspect", "checkout"]);
 assert.equal(searchedAgain.calls.filter((call) => call === "session").length, 1);
+const freshSession = await check("A stalled destination-page redirect uses a bounded fresh session", {
+  candidates: [candidate("Eligible", 8, 5000)], rooms: { Eligible: [room()] }, expectedHotel: "Eligible", searchLanding: true,
+  searchError: (attempt) => attempt === 1 ? "AI browser actions made no progress after repeated observations." : null,
+});
+assert.deepEqual(freshSession.decisions, ["search", "search", "inspect", "checkout"]);
+assert.equal(freshSession.calls.filter((call) => call === "session").length, 2);
+assert.equal(freshSession.calls.filter((call) => call === "close").length, 2, "Only the stale isolated session and final test session are closed");
 await check("Room worker model failure never falls back to cheapest-rate scripting", {
   candidates: [candidate("Eligible", 8, 5000)], rooms: { Eligible: [room()] },
   roomDecider: async () => { throw new Error("AI room worker decision is unavailable"); }, failure: /unavailable/, expectedStatus: "failed",

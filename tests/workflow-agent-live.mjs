@@ -49,7 +49,7 @@ for (const fallback of [false, true]) {
     selectRoom: async (room) => room, returnToSearch: async () => {},
     verifySelectedRoom: async () => verified,
     continueToGuestDetails: async () => "https://secure.booking.com/book.html?stage=guest-details",
-    verifyBoundary: async () => ({ boundary: "protected-checkout", visibleProtectedFields: 3 }), close: async () => {},
+    verifyBoundary: async (receipt) => ({ ...receipt, boundary: "protected-checkout", visibleProtectedFields: 3, checkoutSummaryVerified: true }), close: async () => {},
   };
   const started = Date.now();
   try {

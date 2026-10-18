@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { AgentOrchestrator, AGENTS, ORCHESTRATION, checkBrowserStorage } from "./agent-orchestrator.mjs";
 import { parseTravelRequestHybrid } from "./llm-intake.mjs";
 import { decideBrowserAction } from "./browser-agent.mjs";
+import { resolveModelConfig } from "./model-provider.mjs";
 
 const pagePath = resolve("src", "agent-console.html");
 const terminalStatuses = new Set(["completed", "cancelled", "failed", "needs_human"]);
@@ -101,6 +102,8 @@ export async function createAgentServer({ orchestratorFactory, html, intakeParse
       if (request.method === "GET" && url.pathname === "/api/health") {
         const active = findActiveRun(runs);
         const browserIssue = await checkBrowserStorage();
+        const modelConfig = resolveModelConfig();
+        const aiConfigured = Boolean(modelConfig.apiKey);
         return sendJson(response, {
           ready: true,
           browserReady: !browserIssue,
@@ -108,10 +111,10 @@ export async function createAgentServer({ orchestratorFactory, html, intakeParse
           mode: "local-computer-use",
           agents: AGENTS,
           orchestration: ORCHESTRATION,
-          intakeMode: process.env.GEMINI_API_KEY ? "llm-assisted" : "deterministic-fallback",
-          browserActionMode: process.env.GEMINI_API_KEY ? "agentic" : "unavailable",
-          workflowActionMode: process.env.GEMINI_API_KEY ? "supervised-agentic" : "unavailable",
-          discoveryMode: process.env.GEMINI_API_KEY ? "google-search-grounding" : "unavailable",
+          intakeMode: aiConfigured ? "llm-assisted" : modelConfig.configurationIssue ? "unavailable" : "deterministic-fallback",
+          browserActionMode: aiConfigured ? "agentic" : "unavailable",
+          workflowActionMode: aiConfigured ? "supervised-agentic" : "unavailable",
+          discoveryMode: /^AIza/.test(process.env.GEMINI_API_KEY || "") ? "google-search-grounding" : "unavailable",
           activeRunId: active?.id || null,
           activeRunStatus: active?.orchestrator.status || null,
         });

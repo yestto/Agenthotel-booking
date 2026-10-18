@@ -224,7 +224,9 @@ export function parseStayDates(task, now = new Date()) {
   const isoRange = task.match(/\b(20\d{2}-\d{2}-\d{2})\s*(?:to|until|through|–|—|\s-\s)\s*(20\d{2}-\d{2}-\d{2})\b/i);
   if (isoRange) return finishStay(strictIso(isoRange[1]), strictIso(isoRange[2]), nights, now);
 
-  const crossMonth = task.match(/\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+([A-Za-z.]+)(?:\s*,?\s*(20\d{2}))?\s*(?:to|until|through|–|—|-)\s*(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+([A-Za-z.]+)(?:\s*,?\s*(20\d{2}))?/i);
+  const monthFirstCross = task.match(/\b([A-Za-z.]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(20\d{2}))?\s*(?:to|until|through|–|—|-)\s*([A-Za-z.]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(20\d{2}))?/i);
+  const crossMonth = task.match(/\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+([A-Za-z.]+)(?:\s*,?\s*(20\d{2}))?\s*(?:to|until|through|–|—|-)\s*(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+([A-Za-z.]+)(?:\s*,?\s*(20\d{2}))?/i)
+    || (monthFirstCross && [monthFirstCross[0], monthFirstCross[2], monthFirstCross[1], monthFirstCross[3], monthFirstCross[5], monthFirstCross[4], monthFirstCross[6]]);
   if (crossMonth && isMonth(crossMonth[2]) && isMonth(crossMonth[5])) {
     const startMonth = monthIndex(crossMonth[2]);
     const endMonth = monthIndex(crossMonth[5]);
@@ -241,18 +243,19 @@ export function parseStayDates(task, now = new Date()) {
     return finishStay(isoDate(startYear, startMonth, Number(crossMonth[1])), isoDate(endYear, endMonth, Number(crossMonth[4])), nights, now);
   }
 
-  const sameMonth = task.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|until|through|–|—|-)\s*(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z.]+)(?:\s+(20\d{2}))?/i);
+  const sameMonth = task.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|until|through|–|—|-)\s*(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+([A-Za-z.]+)(?:\s+(20\d{2}))?/i);
   if (sameMonth && isMonth(sameMonth[3])) {
     const month = monthIndex(sameMonth[3]);
     const year = inferredYear(month, Number(sameMonth[1]), sameMonth[4], now);
     return finishStay(isoDate(year, month, Number(sameMonth[1])), isoDate(year, month, Number(sameMonth[2])), nights, now);
   }
 
-  const monthFirstRange = task.match(/\b([A-Za-z.]+)\s+(\d{1,2})(?:st|nd|rd|th)?\s*[–—-]\s*(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d{2}))?/i);
+  const monthFirstRange = task.match(/\b([A-Za-z.]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d{2}))?\s*(?:to|until|through|–|—|-)\s*(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d{2}))?/i);
   if (monthFirstRange && isMonth(monthFirstRange[1])) {
     const month = monthIndex(monthFirstRange[1]);
-    const year = inferredYear(month, Number(monthFirstRange[2]), monthFirstRange[4], now);
-    return finishStay(isoDate(year, month, Number(monthFirstRange[2])), isoDate(year, month, Number(monthFirstRange[3])), nights, now);
+    const year = inferredYear(month, Number(monthFirstRange[2]), monthFirstRange[3] || monthFirstRange[5], now);
+    const endYear = Number(monthFirstRange[5]) || year;
+    return finishStay(isoDate(year, month, Number(monthFirstRange[2])), isoDate(endYear, month, Number(monthFirstRange[4])), nights, now);
   }
 
   const relativeDays = /\btonight\b/i.test(task) ? 0 : /\btomorrow(?:\s+night)?\b/i.test(task) ? 1 : null;

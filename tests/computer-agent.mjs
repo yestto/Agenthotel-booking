@@ -186,6 +186,20 @@ assert.equal(trailingBudget.budgetInr, 4000);
 const spokenDateRange = parseStayDates("from 13 to 15 November 2026", new Date("2026-10-10T00:00:00+05:30"));
 assert.equal(spokenDateRange.checkIn, "2026-11-13");
 assert.equal(spokenDateRange.checkOut, "2026-11-15");
+for (const [phrase, checkIn, checkOut] of [
+  ["january 14 to 16 2027", "2027-01-14", "2027-01-16"],
+  ["January 14th 2027 until 16th", "2027-01-14", "2027-01-16"],
+  ["January 14–16, 2027", "2027-01-14", "2027-01-16"],
+  ["December 30 2026 through January 2 2027", "2026-12-30", "2027-01-02"],
+  ["December 30 to January 2 2027", "2026-12-30", "2027-01-02"],
+  ["November 28 to December 2 2026", "2026-11-28", "2026-12-02"],
+  ["13 to 15 of November 2026", "2026-11-13", "2026-11-15"],
+]) {
+  const dates = parseStayDates(phrase, new Date("2026-10-14T00:00:00+05:30"));
+  assert.equal(dates.checkIn, checkIn, phrase);
+  assert.equal(dates.checkOut, checkOut, phrase);
+}
+assert.throws(() => parseStayDates("February 30 to March 2 2027"), /not valid calendar/);
 
 const explicitlyNamedHotel = parseTravelRequest(
   "Hotel named FabHotel Broholic Prime Suites in Hyderabad on 11 December 2026 for 1 adult and 1 room under ₹3,000",

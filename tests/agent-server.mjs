@@ -23,6 +23,38 @@ const query = "Hotel in Pune on 22 December 2026 for 1 adult and 1 room under 50
 const post = (path, body = JSON.stringify({ query }), headers = {}) => fetch(`${base}${path}`, { method: "POST", body, headers: { "content-type": "application/json", ...headers } });
 try {
   assert.equal((await fetch(`${base}/api/health`)).status, 200);
+  const modelEnvNames = ["LLM_PROVIDER", "GROQ_API_KEY", "GROQ_MODEL", "GEMINI_API_KEY", "GEMINI_MODEL"];
+  const savedModelEnv = new Map(modelEnvNames.map((name) => [name, process.env[name]]));
+  const groqKey = "gsk_HealthFixtureDoNotUse00000000000000000000";
+  const geminiKey = "AIzaHealthFixtureDoNotUse";
+  try {
+    for (const { env, configured, discovery, intakeUnavailable } of [
+      { env: { LLM_PROVIDER: "groq", GROQ_API_KEY: groqKey, GROQ_MODEL: "health-fixture-model" }, configured: true, discovery: false },
+      { env: { GROQ_API_KEY: groqKey }, configured: true, discovery: false },
+      { env: { LLM_PROVIDER: "groq", GEMINI_API_KEY: groqKey }, configured: true, discovery: false },
+      { env: { LLM_PROVIDER: "groq", GROQ_API_KEY: groqKey, GEMINI_API_KEY: geminiKey }, configured: true, discovery: true },
+      { env: { LLM_PROVIDER: "gemini", GEMINI_API_KEY: geminiKey }, configured: true, discovery: true },
+      { env: { LLM_PROVIDER: "groq", GEMINI_API_KEY: geminiKey }, configured: false, discovery: true, intakeUnavailable: true },
+      { env: { LLM_PROVIDER: "groq" }, configured: false, discovery: false, intakeUnavailable: true },
+      { env: {}, configured: false, discovery: false },
+    ]) {
+      for (const name of modelEnvNames) delete process.env[name];
+      Object.assign(process.env, env);
+      const response = await fetch(`${base}/api/health`);
+      assert.equal(response.status, 200);
+      const health = await response.json();
+      assert.equal(health.intakeMode, configured ? "llm-assisted" : intakeUnavailable ? "unavailable" : "deterministic-fallback");
+      assert.equal(health.browserActionMode, configured ? "agentic" : "unavailable");
+      assert.equal(health.workflowActionMode, configured ? "supervised-agentic" : "unavailable");
+      assert.equal(health.discoveryMode, discovery ? "google-search-grounding" : "unavailable");
+      assert.doesNotMatch(JSON.stringify(health), /gsk_HealthFixture|AIzaHealthFixture|health-fixture-model/, "Health must not expose credentials or model names");
+    }
+  } finally {
+    for (const [name, value] of savedModelEnv) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
   const intents = await Promise.all([post("/api/intake"), post("/api/intake")]);
   assert.ok(intents.every((response) => response.status === 200));
   assert.equal(intakeCalls, 1, "Concurrent identical requests must share one AI call");
@@ -46,7 +78,7 @@ try {
   for (let index = 0; index < 40; index += 1) runs.set(`old_${index}`, { id: `old_${index}`, orchestrator: { status: "completed", cancel: async () => {} }, subscribers: new Set() });
   assert.equal((await post("/api/runs")).status, 202);
   assert.ok(runs.size <= 32, "Terminal run/checkpoint history must not grow without a bound");
-  console.log("Server HTTP checks passed: AI-cache coalescing, malformed input, untrusted origins, concurrent-run lock, incremental event replay, cancellation and bounded retention.");
+  console.log("Server HTTP checks passed: provider-aware readiness without key leakage, AI-cache coalescing, malformed input, untrusted origins, concurrent-run lock, incremental event replay, cancellation and bounded retention.");
 } finally {
   await Promise.all([...runs.values()].map((run) => run.orchestrator.cancel()));
   server.closeAllConnections();
