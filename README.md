@@ -250,3 +250,7 @@ The earlier Nuitee/API prototype remains in the repository as a separate compari
 
 The primary AI route can inspect semantic controls on the requested domain, but verified search completion currently requires the Booking.com state adapter. Other providers are not end-to-end supported merely because their homepage loads. The older generic scripted gateway remains for explicit adapter development, not a silent recovery from an AI failure. Third-party sites can change UI, require login, redirect to another provider or present a CAPTCHA. The correct behavior is a bounded attempt followed by a precise failure or human handoff—not fabricated availability or challenge bypass. Add and test a provider-specific state verifier before claiming support for another supplier.
 Transient model HTTP 502/503/504 responses receive one abort-aware retry within the same request timeout. Invalid model output, quota errors and persistent failures still stop; no scripted browser fallback is used.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for shell-specific setup, the available test suites, the pull-request workflow, and guidance on safely reporting problems.
