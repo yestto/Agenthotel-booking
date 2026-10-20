@@ -31,6 +31,14 @@ For a live agent run, configure `LLM_PROVIDER` and its matching API key in `.env
 
 Set `CHROME_PATH` in the same shell you use to start the agent. These examples use common Google Chrome installation paths; replace the path if your browser is installed elsewhere.
 
+On Linux, first locate an installed browser:
+
+```sh
+command -v google-chrome || command -v chromium || command -v chromium-browser
+```
+
+Use the absolute path printed by that command as the value of `CHROME_PATH`. If no path is printed, install Chrome or Chromium first. The Linux example below assumes the command returned `/usr/bin/google-chrome`.
+
 ```sh
 # Linux
 export CHROME_PATH="/usr/bin/google-chrome"
