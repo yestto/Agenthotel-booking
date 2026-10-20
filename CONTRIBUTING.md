@@ -27,6 +27,22 @@ cp .env.example .env
 
 For a live agent run, configure `LLM_PROVIDER` and its matching API key in `.env`, following the [README](README.md#run-the-complete-platform). On non-Windows hosts, also set `CHROME_PATH` to your installed Chrome or Chromium executable. Never include credentials in a commit, issue, pull request, screenshot, or test report.
 
+### Browser path on Linux and macOS
+
+Set `CHROME_PATH` in the same shell you use to start the agent. These examples use common Google Chrome installation paths; replace the path if your browser is installed elsewhere.
+
+```sh
+# Linux
+export CHROME_PATH="/usr/bin/google-chrome"
+```
+
+```sh
+# macOS
+export CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+```
+
+On macOS, choose the executable inside the application bundle, rather than the `.app` directory itself. On Linux, use the installed Chrome or Chromium executable rather than a desktop shortcut.
+
 Start the local console with:
 
 ```sh
